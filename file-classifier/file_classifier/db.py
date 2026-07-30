@@ -1,0 +1,202 @@
+"""Database SQLite con indice full-text per l'archivio dei file classificati."""
+
+from __future__ import annotations
+
+import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    original_path TEXT NOT NULL UNIQUE,
+    current_path TEXT NOT NULL,
+    extension TEXT,
+    size_bytes INTEGER,
+    modified_at TEXT,
+    content_hash TEXT,
+    content TEXT,
+    extraction_error TEXT,
+    theme TEXT,
+    theme_keywords TEXT,
+    indexed_at TEXT,
+    organized_at TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    filename,
+    content,
+    theme,
+    content='files',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+    INSERT INTO files_fts(rowid, filename, content, theme)
+    VALUES (new.id, new.filename, coalesce(new.content, ''), coalesce(new.theme, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, filename, content, theme)
+    VALUES ('delete', old.id, old.filename, coalesce(old.content, ''), coalesce(old.theme, ''));
+END;
+
+CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+    INSERT INTO files_fts(files_fts, rowid, filename, content, theme)
+    VALUES ('delete', old.id, old.filename, coalesce(old.content, ''), coalesce(old.theme, ''));
+    INSERT INTO files_fts(rowid, filename, content, theme)
+    VALUES (new.id, new.filename, coalesce(new.content, ''), coalesce(new.theme, ''));
+END;
+"""
+
+
+@dataclass
+class FileRecord:
+    id: int
+    filename: str
+    original_path: str
+    current_path: str
+    extension: str | None
+    size_bytes: int | None
+    modified_at: str | None
+    content_hash: str | None
+    content: str | None
+    extraction_error: str | None
+    theme: str | None
+    theme_keywords: str | None
+    indexed_at: str | None
+    organized_at: str | None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "FileRecord":
+        return cls(**{key: row[key] for key in row.keys()})
+
+
+class FileDatabase:
+    def __init__(self, db_path: str | Path):
+        self.db_path = str(db_path)
+        self._conn = sqlite3.connect(self.db_path)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.executescript(SCHEMA)
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> "FileDatabase":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    @contextmanager
+    def transaction(self):
+        try:
+            yield self._conn
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def upsert_file(
+        self,
+        *,
+        filename: str,
+        original_path: str,
+        current_path: str,
+        extension: str,
+        size_bytes: int,
+        modified_at: str,
+        content_hash: str,
+        content: str | None,
+        extraction_error: str | None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.transaction() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO files (
+                    filename, original_path, current_path, extension, size_bytes,
+                    modified_at, content_hash, content, extraction_error, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(original_path) DO UPDATE SET
+                    filename=excluded.filename,
+                    current_path=excluded.current_path,
+                    extension=excluded.extension,
+                    size_bytes=excluded.size_bytes,
+                    modified_at=excluded.modified_at,
+                    content_hash=excluded.content_hash,
+                    content=excluded.content,
+                    extraction_error=excluded.extraction_error,
+                    indexed_at=excluded.indexed_at
+                """,
+                (
+                    filename, original_path, current_path, extension, size_bytes,
+                    modified_at, content_hash, content, extraction_error, now,
+                ),
+            )
+            if cur.lastrowid:
+                return cur.lastrowid
+            row = conn.execute(
+                "SELECT id FROM files WHERE original_path = ?", (original_path,)
+            ).fetchone()
+            return row["id"]
+
+    def set_theme(self, file_id: int, theme: str, keywords: list[str]) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE files SET theme = ?, theme_keywords = ? WHERE id = ?",
+                (theme, ", ".join(keywords), file_id),
+            )
+
+    def set_current_path(self, file_id: int, new_path: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE files SET current_path = ?, organized_at = ? WHERE id = ?",
+                (new_path, now, file_id),
+            )
+
+    def all_files(self, only_with_content: bool = False) -> list[FileRecord]:
+        query = "SELECT * FROM files"
+        if only_with_content:
+            query += " WHERE content IS NOT NULL AND content != ''"
+        rows = self._conn.execute(query).fetchall()
+        return [FileRecord.from_row(row) for row in rows]
+
+    def get_file(self, file_id: int) -> FileRecord | None:
+        row = self._conn.execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+        return FileRecord.from_row(row) if row else None
+
+    def search(self, query: str, limit: int = 20) -> list[dict]:
+        fts_query = " ".join(f'"{term}"' for term in query.split())
+        rows = self._conn.execute(
+            """
+            SELECT f.id, f.filename, f.current_path, f.theme,
+                   snippet(files_fts, 1, '[', ']', '...', 12) AS snippet,
+                   bm25(files_fts) AS rank
+            FROM files_fts
+            JOIN files f ON f.id = files_fts.rowid
+            WHERE files_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def themes_summary(self) -> list[dict]:
+        rows = self._conn.execute(
+            """
+            SELECT theme, COUNT(*) AS n_files
+            FROM files
+            WHERE theme IS NOT NULL
+            GROUP BY theme
+            ORDER BY n_files DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
