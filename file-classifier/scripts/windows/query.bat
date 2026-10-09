@@ -1,17 +1,10 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: --- Modifica questi due percorsi se la tua installazione e' diversa ---
-set VENV_PYTHON=%~dp0..\..\.venv312\Scripts\python.exe
-set FC_DB=%~dp0..\..\file_classifier.db
-:: -------------------------------------------------------------------
+call "%~dp0_setup.bat"
+if errorlevel 1 exit /b 1
 
-if not exist "%VENV_PYTHON%" (
-    echo Python non trovato in: %VENV_PYTHON%
-    echo Modifica il percorso VENV_PYTHON in questo file ^(query.bat^).
-    pause
-    exit /b 1
-)
+set FC_DB=%PROJECT_DIR%\file_classifier.db
 
 title Interroga contenuti - %FC_DB%
 

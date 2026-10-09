@@ -148,3 +148,52 @@ def test_sync_remaps_relettered_drive_instead_of_deleting(tmp_path, monkeypatch,
         record = db.get_file(fid)
         assert record.status == "active"
         assert Path(record.current_path) == drive_b / "nota.txt"
+
+
+def test_agente_interactive_single_valid_choice_does_not_error(tmp_path, monkeypatch, capsys):
+    """Regressione: una scelta numerica valida non deve far ritornare errore."""
+    drive = tmp_path / "disco_a"
+    drive.mkdir()
+    (drive / "nota.txt").write_text("appunti", encoding="utf-8")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive: "VOL-A"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive)])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "1")
+
+    assert cli.main(["--db", str(db_path), "agente"]) == 0
+    assert "Acquisizione" in capsys.readouterr().out
+
+    with FileDatabase(db_path) as db:
+        assert len(db.all_files()) == 1
+
+
+def test_agente_interactive_tutti_processes_every_connected_drive(tmp_path, monkeypatch, capsys):
+    drive_a = tmp_path / "disco_a"
+    drive_a.mkdir()
+    (drive_a / "nota.txt").write_text("appunti", encoding="utf-8")
+    drive_b = tmp_path / "disco_b"
+    drive_b.mkdir()
+    (drive_b / "ricetta.txt").write_text("ricetta torta", encoding="utf-8")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive_a: "VOL-A", drive_b: "VOL-B"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive_a), str(drive_b)])
+    monkeypatch.setattr("builtins.input", lambda prompt="": "tutti")
+
+    assert cli.main(["--db", str(db_path), "agente"]) == 0
+    out = capsys.readouterr().out
+    assert out.count("Acquisizione") == 2
+
+    with FileDatabase(db_path) as db:
+        assert len(db.all_files()) == 2
+
+
+def test_default_db_lives_inside_project_folder():
+    expected_project_root = Path(cli.__file__).resolve().parent.parent
+    assert Path(cli.DEFAULT_DB).parent == expected_project_root
+    assert Path(cli.DEFAULT_DB).name == "file_classifier.db"

@@ -109,6 +109,7 @@ quelli **attualmente collegati** e per ciascuno dice se è **nuovo** o
 
 ```bash
 # elenca i dischi collegati (conosciuti/nuovi) e chiede quale sottoporre
+# (alla domanda si può rispondere con un numero, oppure 'tutti' per sottoporli tutti)
 file-classifier --db archivio.db agente
 
 # sottopone direttamente un disco specifico, senza scelta interattiva
@@ -300,15 +301,35 @@ i comandi più usati con un doppio clic, senza aprire un terminale:
 
 (equivalenti per Linux/macOS in `scripts/unix/`: `cerca.sh`, `sync.sh`.)
 
-In testa a ciascuno script ci sono le righe da modificare una sola volta,
-con il percorso dell'ambiente virtuale e del database — di default puntano
-dentro la cartella del progetto stessa (come creati seguendo questo
-README); se li hai messi altrove, aggiorna questi percorsi:
+Non c'è nessun percorso da modificare: l'ambiente virtuale e il database
+vivono sempre dentro la cartella del progetto stessa (`.venv312\` e
+`file_classifier.db`, calcolati in base alla posizione dello script, non
+alla cartella da cui viene lanciato). Questo significa che **copiando
+l'intera cartella `file-classifier` su un altro disco o un altro
+computer**, tutto continua a funzionare — database compreso — senza
+dover riconfigurare nulla.
 
-```bat
-set VENV_PYTHON=%~dp0..\..\.venv312\Scripts\python.exe
-set FC_DB=%~dp0..\..\file_classifier.db
-```
+### Si preparano da soli, alla prima esecuzione
+
+Ogni script, prima di lanciare il comando, chiama in automatico
+`_setup.bat` (nella stessa cartella), che verifica che tutto il necessario
+sia a posto e, se manca, lo prepara da sé:
+
+- rimuove da solo il blocco di sicurezza di Windows dai file del progetto
+  (lo stesso visto con l'errore "pericoloso"), così non serve più lanciare
+  `Unblock-File` a mano;
+- se l'ambiente virtuale (`.venv312`) non esiste o non funziona più (es.
+  cartella appena copiata su un altro PC, o su un disco dove non c'era
+  ancora), lo crea da zero con il Python disponibile sul sistema;
+- se il programma o le sue dipendenze non risultano installati, esegue da
+  sé `pip install -e .`.
+
+La prima volta (o dopo aver spostato la cartella su un PC nuovo) questi
+passaggi possono richiedere qualche minuto in più; dalle volte successive
+vengono saltati perché tutto è già pronto. Se sul sistema non è installato
+alcun Python, lo script lo dice chiaramente e si ferma (è il solo passaggio
+che resta manuale, perché installare un programma di terze parti senza
+chiederlo non è una buona idea).
 
 ### Tre pulsanti sul desktop, creati in automatico
 
@@ -382,6 +403,7 @@ file_classifier/
 tests/           # test automatici per ciascun modulo
 scripts/
   windows/       # cerca.bat, agente.bat, query.bat, sync.bat
+                 # + _setup.bat (verifica/prepara l'ambiente, uso interno)
                  # + crea_collegamenti_desktop.ps1 (icone sul Desktop)
   unix/          # sync.sh, cerca.sh (equivalenti per Linux/macOS)
 ```

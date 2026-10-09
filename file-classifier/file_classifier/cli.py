@@ -19,7 +19,11 @@ from .organizer import build_plan, execute_plan
 from .paths import path_key, within
 from .trash import find_in_trash, trash_candidate_dirs
 
-DEFAULT_DB = "file_classifier.db"
+# Il database predefinito vive dentro la cartella del progetto (non in base
+# alla cartella da cui viene lanciato il comando), così l'intera cartella
+# resta autosufficiente anche copiandola su un altro disco/computer.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB = str(PROJECT_ROOT / "file_classifier.db")
 
 
 def _volume_registration_info(root: Path) -> tuple[str | None, str | None, str | None]:
@@ -392,17 +396,23 @@ def cmd_agente(args: argparse.Namespace) -> int:
                 return 1
         else:
             try:
-                choice = input("\nNumero del disco da sottoporre (vuoto per annullare): ").strip()
+                choice = input(
+                    "\nNumero del disco da sottoporre, 'tutti' per sottoporli tutti "
+                    "(vuoto per annullare): "
+                ).strip()
             except EOFError:
                 choice = ""
             if not choice:
                 print("Operazione annullata.")
                 return 0
-            try:
-                chosen = [statuses[int(choice) - 1]]
-            except (ValueError, IndexError):
-                print("Scelta non valida.", file=sys.stderr)
-                return 1
+            if choice.lower() in ("tutti", "all", "a"):
+                chosen = statuses
+            else:
+                try:
+                    chosen = [statuses[int(choice) - 1]]
+                except (ValueError, IndexError):
+                    print("Scelta non valida.", file=sys.stderr)
+                    return 1
 
         for s in chosen:
             if s["known"]:
