@@ -30,6 +30,11 @@ servizi esterni.
    parole chiave e permettono di aprire direttamente la cartella o il file
    trovato (eventualmente con un programma specifico). Vedi la sezione
    dedicata più sotto.
+6. **`sync`** — verifica le cartelle/dischi già registrati: indicizza i file
+   nuovi, classifica quelli non ancora classificati, e aggiorna lo stato dei
+   file non più al loro posto (cestinati o cancellati fisicamente). Con
+   `--loop` resta in esecuzione e ripete il controllo a intervalli (un'ora
+   di default). Vedi la sezione dedicata più sotto.
 
 Il database (`file_classifier.db` di default) è un normale file SQLite:
 può essere interrogato anche direttamente con `sqlite3` o qualunque client
@@ -127,6 +132,49 @@ Questi comandi vanno eseguiti sul computer dove si trovano i file (aprono
 realmente il file manager o un programma): usano `explorer` su Windows,
 `open` su macOS e `xdg-open` su Linux.
 
+## Sincronizzazione periodica (nuovi file, cestino, cancellazioni)
+
+Il comando `sync` controlla le cartelle/dischi già registrati con `index`
+(anche con `--all-drives`) e si occupa di tre cose in un solo passaggio:
+
+1. **File nuovi**: li indicizza (come farebbe `index`) e, se ce ne sono,
+   classifica quelli ancora senza tema.
+2. **File spostati nel cestino**: se un file indicizzato non si trova più al
+   suo percorso, `sync` controlla il cestino del sistema (`$Recycle.Bin` su
+   Windows, `~/.Trash` su macOS, `~/.local/share/Trash` e `.Trash-<uid>`
+   sui dischi esterni su Linux) confrontando il **contenuto** (hash), non il
+   nome — il cestino spesso rinomina i file. Se lo trova, il file **resta
+   classificato**: si aggiorna solo la posizione (e lo stato diventa
+   "cestinato").
+3. **File cancellati fisicamente**: se un file manca sia dal percorso
+   originale sia da ogni cestino conosciuto, viene **rimosso dalla
+   tabella** (e dall'indice di ricerca).
+
+```bash
+# un singolo controllo (es. da pianificare con lo scheduler del sistema)
+file-classifier --db archivio.db sync
+
+# resta in esecuzione e ripete il controllo ogni ora (valore di default)
+file-classifier --db archivio.db sync --loop
+
+# controllo ogni N ore
+file-classifier --db archivio.db sync --loop --interval 2
+```
+
+Per farlo girare automaticamente ogni ora senza tenere un terminale aperto,
+l'opzione più robusta (sopravvive ai riavvii) è usare lo scheduler del
+sistema invece di `--loop`:
+
+```powershell
+# Windows: Pianificazione attività, ogni ora
+schtasks /create /tn "FileClassifierSync" /tr "C:\percorso\.venv312\Scripts\file-classifier.exe --db C:\Archivio\indice.db sync" /sc hourly
+```
+
+```bash
+# Linux/macOS: crontab -e
+0 * * * * /percorso/.venv/bin/file-classifier --db /percorso/archivio.db sync
+```
+
 ## Note di sicurezza
 
 - `organize` di default è **dry-run**: nessun file viene toccato finché non
@@ -151,11 +199,12 @@ pytest
 file_classifier/
   extractor.py   # estrazione del testo dai file (txt, pdf, docx, ...)
   drives.py      # individuazione dei dischi/unità presenti sul sistema
+  trash.py       # individuazione dei file nel cestino (per 'sync')
   db.py          # schema SQLite + indice full-text (FTS5) + tabella parole chiave
   classifier.py  # classificazione per argomento (TF-IDF + KMeans)
   organizer.py   # pianificazione ed esecuzione della riorganizzazione
   opener.py      # apertura di file/cartelle nel file manager del sistema
-  cli.py         # comandi: index, drives, classify, organize, query,
+  cli.py         # comandi: index, drives, classify, organize, sync, query,
                  # themes, keywords, find, open, cerca
 tests/           # test automatici per ciascun modulo
 ```

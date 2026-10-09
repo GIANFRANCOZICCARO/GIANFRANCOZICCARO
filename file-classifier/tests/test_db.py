@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from file_classifier.db import FileDatabase
@@ -125,3 +126,112 @@ def test_set_theme_is_idempotent_on_reclassification(tmp_path: Path):
         assert db.find_by_keyword("vecchio") == []
         assert len(db.find_by_keyword("nuovo")) == 1
         assert db.keywords_summary() == [{"keyword": "nuovo", "n_files": 1}]
+
+
+def test_new_file_is_active_by_default(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1",
+            content="testo", extraction_error=None,
+        )
+        assert db.get_file(fid).status == "active"
+
+
+def test_relocate_to_trash_keeps_theme_and_keywords(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1",
+            content="testo", extraction_error=None,
+        )
+        db.set_theme(fid, "tema", ["parola"])
+
+        db.relocate_to_trash(fid, "/data/.Trash/a.txt")
+
+        record = db.get_file(fid)
+        assert record.status == "trashed"
+        assert record.current_path.endswith("a.txt")
+        assert record.theme == "tema"
+        assert db.find_by_keyword("parola") != []
+
+
+def test_reindexing_a_trashed_file_restores_active_status(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1",
+            content="testo", extraction_error=None,
+        )
+        db.relocate_to_trash(fid, "/data/.Trash/a.txt")
+        assert db.get_file(fid).status == "trashed"
+
+        db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t2", content_hash="h1",
+            content="testo", extraction_error=None,
+        )
+        assert db.get_file(fid).status == "active"
+
+
+def test_set_status_rejects_invalid_value(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1",
+            content="testo", extraction_error=None,
+        )
+        try:
+            db.set_status(fid, "boh")
+            assert False, "doveva solllevare ValueError"
+        except ValueError:
+            pass
+
+
+def test_delete_file_removes_row_keywords_and_fts_entry(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/data/a.txt", current_path="/data/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1",
+            content="testo unico", extraction_error=None,
+        )
+        db.set_theme(fid, "tema", ["parola"])
+
+        db.delete_file(fid)
+
+        assert db.get_file(fid) is None
+        assert db.find_by_keyword("parola") == []
+        assert db.search("unico") == []
+
+
+def test_migrates_legacy_database_without_status_column(tmp_path: Path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            original_path TEXT NOT NULL UNIQUE,
+            current_path TEXT NOT NULL,
+            extension TEXT,
+            size_bytes INTEGER,
+            modified_at TEXT,
+            content_hash TEXT,
+            content TEXT,
+            extraction_error TEXT,
+            theme TEXT,
+            theme_keywords TEXT,
+            indexed_at TEXT,
+            organized_at TEXT
+        );
+        INSERT INTO files (filename, original_path, current_path, content_hash)
+        VALUES ('a.txt', '/data/a.txt', '/data/a.txt', 'h1');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.status == "active"

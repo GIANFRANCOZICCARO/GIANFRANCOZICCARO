@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS files (
     theme TEXT,
     theme_keywords TEXT,
     indexed_at TEXT,
-    organized_at TEXT
+    organized_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
 );
 
 CREATE TABLE IF NOT EXISTS file_keywords (
@@ -81,6 +82,7 @@ class FileRecord:
     theme_keywords: str | None
     indexed_at: str | None
     organized_at: str | None
+    status: str = "active"
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "FileRecord":
@@ -93,7 +95,14 @@ class FileDatabase:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        # Database creati prima dell'introduzione di questa colonna.
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(files)")}
+        if "status" not in columns:
+            self._conn.execute("ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
 
     def close(self) -> None:
         self._conn.close()
@@ -141,8 +150,8 @@ class FileDatabase:
                 """
                 INSERT INTO files (
                     filename, original_path, current_path, extension, size_bytes,
-                    modified_at, content_hash, content, extraction_error, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    modified_at, content_hash, content, extraction_error, indexed_at, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
                 ON CONFLICT(original_path) DO UPDATE SET
                     filename=excluded.filename,
                     current_path=excluded.current_path,
@@ -152,7 +161,8 @@ class FileDatabase:
                     content_hash=excluded.content_hash,
                     content=excluded.content,
                     extraction_error=excluded.extraction_error,
-                    indexed_at=excluded.indexed_at
+                    indexed_at=excluded.indexed_at,
+                    status='active'
                 """,
                 (
                     filename, original_path, current_path, extension, size_bytes,
@@ -183,6 +193,28 @@ class FileDatabase:
                 "UPDATE files SET current_path = ?, organized_at = ? WHERE id = ?",
                 (path_key(new_path), now, file_id),
             )
+
+    def set_status(self, file_id: int, status: str) -> None:
+        if status not in ("active", "trashed"):
+            raise ValueError("status deve essere 'active' o 'trashed'")
+        with self.transaction() as conn:
+            conn.execute("UPDATE files SET status = ? WHERE id = ?", (status, file_id))
+
+    def relocate_to_trash(self, file_id: int, trash_path: str) -> None:
+        """Il file non è più al suo posto ma è stato ritrovato nel cestino:
+        aggiorna solo la posizione, mantenendo tema e parole chiave."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE files SET current_path = ?, status = 'trashed' WHERE id = ?",
+                (path_key(trash_path), file_id),
+            )
+
+    def delete_file(self, file_id: int) -> None:
+        """Rimuove definitivamente un file dalla tabella (es. perché cancellato
+        fisicamente, non più trovato nemmeno nel cestino)."""
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM file_keywords WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
 
     def add_scan_root(self, root):
         with self.transaction() as conn:

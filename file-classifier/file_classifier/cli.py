@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import sys
 import json
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .classifier import classify_files
@@ -14,8 +16,59 @@ from .extractor import extract_file, iter_files
 from . import opener
 from .organizer import build_plan, execute_plan
 from .paths import path_key
+from .trash import find_in_trash, trash_candidate_dirs
 
 DEFAULT_DB = "file_classifier.db"
+
+
+def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False) -> tuple[int, int, int]:
+    """Scansiona le radici indicate e aggiorna il database. Ritorna
+    (file indicizzati, file saltati, file di cui si sono salvati solo i metadati)."""
+    count = skipped = metadata = 0
+
+    def progress(event, path=None):
+        print(json.dumps(dict(event=event, indexed=count, skipped=skipped,
+                              metadata_only=metadata, path=str(path) if path else None),
+                         ensure_ascii=True), file=sys.stderr, flush=True)
+
+    progress("start")
+    excluded = {path_key(db_path + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        db.add_scan_root(root)
+        for path in iter_files(root):
+            if path_key(path) in excluded:
+                continue
+            progress("processing", path)
+            try:
+                extracted = extract_file(path)
+            except OSError as exc:
+                skipped += 1
+                progress("skipped", path)
+                print(f"  [salto] {path}: {exc}", file=sys.stderr)
+                continue
+
+            db.upsert_file(
+                filename=extracted.filename,
+                original_path=str(path),
+                current_path=str(path),
+                extension=extracted.extension,
+                size_bytes=extracted.size_bytes,
+                modified_at=extracted.modified_at,
+                content_hash=extracted.content_hash,
+                content=extracted.content,
+                extraction_error=extracted.extraction_error,
+            )
+            count += 1
+            metadata += extracted.content is None
+            progress("indexed", path)
+            status = "ok" if extracted.content is not None else f"solo metadati ({extracted.extraction_error})"
+            if verbose:
+                print(f"  [{status}] {path}")
+
+    progress("complete")
+    return count, skipped, metadata
 
 
 def cmd_index(args: argparse.Namespace) -> int:
@@ -35,50 +88,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         roots = [root]
 
     with FileDatabase(args.db) as db:
-        count = skipped = metadata = 0
-
-        def progress(event, path=None):
-            print(json.dumps(dict(event=event, indexed=count, skipped=skipped,
-                                  metadata_only=metadata, path=str(path) if path else None),
-                             ensure_ascii=True), file=sys.stderr, flush=True)
-
-        progress("start")
-        excluded = {path_key(args.db + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
-        for root in roots:
-            if not root.is_dir():
-                continue
-            db.add_scan_root(root)
-            for path in iter_files(root):
-                if path_key(path) in excluded:
-                    continue
-                progress("processing", path)
-                try:
-                    extracted = extract_file(path)
-                except OSError as exc:
-                    skipped += 1
-                    progress("skipped", path)
-                    print(f"  [salto] {path}: {exc}", file=sys.stderr)
-                    continue
-
-                db.upsert_file(
-                    filename=extracted.filename,
-                    original_path=str(path),
-                    current_path=str(path),
-                    extension=extracted.extension,
-                    size_bytes=extracted.size_bytes,
-                    modified_at=extracted.modified_at,
-                    content_hash=extracted.content_hash,
-                    content=extracted.content,
-                    extraction_error=extracted.extraction_error,
-                )
-                count += 1
-                metadata += extracted.content is None
-                progress("indexed", path)
-                status = "ok" if extracted.content is not None else f"solo metadati ({extracted.extraction_error})"
-                if args.verbose:
-                    print(f"  [{status}] {path}")
-
-        progress("complete")
+        count, _, _ = _index_roots(db, roots, args.db, verbose=args.verbose)
         print(f"Indicizzati {count} file in '{args.db}'.")
     return 0
 
@@ -135,6 +145,65 @@ def cmd_organize(args: argparse.Namespace) -> int:
         else:
             print(f"\nCompletate {len(executed)} operazioni ({args.mode}).")
     return 0
+
+
+def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: int | None) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] Sincronizzazione in corso su {len(roots)} cartella/e registrata/e...")
+
+    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False)
+
+    unclassified = [r for r in db.all_files() if not r.theme]
+    classified_count = 0
+    if unclassified:
+        results = classify_files(db.all_files(), num_themes=num_themes)
+        for result in results:
+            db.set_theme(result.file_id, result.theme, result.keywords)
+        classified_count = len(unclassified)
+
+    missing = [r for r in db.all_files() if not Path(r.current_path).exists()]
+    trashed = deleted = 0
+    trash_dirs = None
+    for record in missing:
+        if trash_dirs is None:
+            trash_dirs = trash_candidate_dirs(roots)
+        found = find_in_trash(record.content_hash, trash_dirs) if record.content_hash else None
+        if found:
+            db.relocate_to_trash(record.id, str(found))
+            trashed += 1
+            print(f"  [cestinato] {record.filename} -> {found}")
+        else:
+            db.delete_file(record.id)
+            deleted += 1
+            print(f"  [cancellato] {record.filename}")
+
+    print(f"  nuovi/aggiornati: {new_count}, classificati: {classified_count}, "
+          f"cestinati: {trashed}, cancellati: {deleted}")
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Verifica le cartelle/dischi già registrati con 'index': indicizza i file
+    nuovi, classifica quelli non ancora classificati, e distingue i file
+    cestinati (restano classificati, cambia solo la posizione) da quelli
+    cancellati fisicamente (rimossi dalla tabella)."""
+    with FileDatabase(args.db) as db:
+        roots = [Path(r) for r in db.scan_roots()]
+        if not roots:
+            print("Errore: nessuna cartella/disco registrato. Esegui prima 'index'.", file=sys.stderr)
+            return 1
+
+        while True:
+            _sync_once(db, roots, args.db, args.num_themes)
+            if not args.loop:
+                return 0
+            next_run = datetime.now() + timedelta(hours=args.interval)
+            print(f"Prossima sincronizzazione alle {next_run.strftime('%H:%M:%S')} "
+                  f"(ogni {args.interval} ore). Premi Ctrl+C per interrompere.")
+            try:
+                time.sleep(args.interval * 3600)
+            except KeyboardInterrupt:
+                print("\nSincronizzazione periodica interrotta.")
+                return 0
 
 
 def cmd_query(args: argparse.Namespace) -> int:
@@ -294,6 +363,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_organize.add_argument("--mode", choices=["copy", "move"], default="copy", help="copia (default, sicuro) o sposta i file")
     p_organize.add_argument("--execute", action="store_true", help="applica realmente le operazioni (default: dry-run)")
     p_organize.set_defaults(func=cmd_organize)
+
+    p_sync = sub.add_parser("sync", help="verifica nuovi file, file cestinati e file cancellati nelle cartelle già registrate")
+    p_sync.add_argument("--num-themes", type=int, default=None, help="numero di temi per la classificazione dei nuovi file")
+    p_sync.add_argument("--loop", action="store_true", help="resta in esecuzione e ripete la sincronizzazione periodicamente")
+    p_sync.add_argument("--interval", type=float, default=1.0, help="intervallo in ore tra una sincronizzazione e la successiva (default: 1)")
+    p_sync.set_defaults(func=cmd_sync)
 
     p_query = sub.add_parser("query", help="cerca nei contenuti indicizzati (full-text)")
     p_query.add_argument("terms", help="termini di ricerca")

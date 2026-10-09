@@ -29,7 +29,7 @@ class ExtractedFile:
     extraction_error: str | None = None
 
 
-def _sha256_of_file(path: Path) -> str:
+def sha256_of_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
@@ -111,7 +111,7 @@ def extract_file(path: Path) -> ExtractedFile:
         extension=path.suffix.lower(),
         size_bytes=stat.st_size,
         modified_at=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        content_hash=_sha256_of_file(path),
+        content_hash=sha256_of_file(path),
         content=content,
         extraction_error=error,
     )

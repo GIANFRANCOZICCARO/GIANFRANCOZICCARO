@@ -2,6 +2,7 @@ from pathlib import Path
 
 from file_classifier import cli, opener
 from file_classifier.db import FileDatabase
+from file_classifier.paths import path_key
 
 
 def _seed(db_path: Path, source: Path) -> int:
@@ -208,3 +209,98 @@ def test_index_all_drives(tmp_path, monkeypatch, capsys):
 def test_index_requires_directory_or_all_drives(capsys):
     assert cli.main(["--db", "x.db", "index"]) == 1
     assert "specificare una cartella" in capsys.readouterr().err
+
+
+def test_sync_requires_registered_roots(tmp_path, capsys):
+    db_path = tmp_path / "db.sqlite"
+    FileDatabase(db_path).close()
+
+    assert cli.main(["--db", str(db_path), "sync"]) == 1
+    assert "nessuna cartella" in capsys.readouterr().err.lower()
+
+
+def test_sync_indexes_and_classifies_new_file(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+
+    (source / "ricetta.txt").write_text("ricetta torta cioccolato forno", encoding="utf-8")
+
+    assert cli.main(["--db", str(db_path), "sync"]) == 0
+    out = capsys.readouterr().out
+    assert "nuovi/aggiornati: 1" in out
+    assert "classificati: 1" in out
+
+    with FileDatabase(db_path) as db:
+        files = db.all_files()
+        assert len(files) == 1
+        assert files[0].theme
+
+
+def test_sync_relocates_trashed_file(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    target = source / "nota.txt"
+    target.write_text("appunti importanti", encoding="utf-8")
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        fid = db.all_files()[0].id
+        db.set_theme(fid, "appunti", ["appunti"])
+
+    trash_dir = tmp_path / "cestino"
+    trash_dir.mkdir()
+    renamed = trash_dir / "$R1.txt"
+    renamed.write_text("appunti importanti", encoding="utf-8")
+    target.unlink()
+
+    monkeypatch.setattr("file_classifier.cli.trash_candidate_dirs", lambda roots: [trash_dir])
+
+    assert cli.main(["--db", str(db_path), "sync"]) == 0
+    assert "cestinati: 1" in capsys.readouterr().out
+
+    with FileDatabase(db_path) as db:
+        record = db.get_file(fid)
+        assert record.status == "trashed"
+        assert path_key(record.current_path) == path_key(renamed)
+        assert record.theme == "appunti"
+
+
+def test_sync_deletes_file_not_found_anywhere(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    target = source / "nota.txt"
+    target.write_text("appunti da cancellare", encoding="utf-8")
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        fid = db.all_files()[0].id
+
+    target.unlink()
+    monkeypatch.setattr("file_classifier.cli.trash_candidate_dirs", lambda roots: [])
+
+    assert cli.main(["--db", str(db_path), "sync"]) == 0
+    assert "cancellati: 1" in capsys.readouterr().out
+
+    with FileDatabase(db_path) as db:
+        assert db.get_file(fid) is None
+
+
+def test_sync_loop_runs_once_then_stops_on_interrupt(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+
+    sleep_calls = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("file_classifier.cli.time.sleep", fake_sleep)
+
+    assert cli.main(["--db", str(db_path), "sync", "--loop", "--interval", "2"]) == 0
+    assert sleep_calls == [2 * 3600]
+    assert "interrotta" in capsys.readouterr().out.lower()
