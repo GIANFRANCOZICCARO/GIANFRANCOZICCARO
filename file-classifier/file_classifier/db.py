@@ -238,7 +238,8 @@ class FileDatabase:
         fts_query = " ".join(f'"{term}"' for term in query.split())
         rows = self._conn.execute(
             """
-            SELECT f.id, f.filename, f.current_path, f.theme,
+            SELECT f.id, f.filename, f.current_path, f.extension, f.modified_at,
+                   f.theme, f.theme_keywords,
                    snippet(files_fts, 1, '[', ']', '...', 12) AS snippet,
                    bm25(files_fts) AS rank
             FROM files_fts
@@ -268,7 +269,8 @@ class FileDatabase:
         """Cerca i file associati a una parola chiave (anche come sottostringa)."""
         rows = self._conn.execute(
             """
-            SELECT DISTINCT f.id, f.filename, f.current_path, f.theme, f.theme_keywords
+            SELECT DISTINCT f.id, f.filename, f.current_path, f.extension,
+                   f.modified_at, f.theme, f.theme_keywords
             FROM file_keywords k
             JOIN files f ON f.id = k.file_id
             WHERE k.keyword LIKE ?

@@ -206,6 +206,13 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 return 0
 
 
+def _print_result_details(row: dict) -> None:
+    print(f"    tipo: {row.get('extension') or '(nessuna estensione)'}")
+    print(f"    percorso: {row['current_path']}")
+    print(f"    scritto il: {row.get('modified_at') or 'n/d'}")
+    print(f"    parole chiave: {row.get('theme_keywords') or '-'}")
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     with FileDatabase(args.db) as db:
         results = db.search(args.terms, limit=args.limit)
@@ -213,8 +220,8 @@ def cmd_query(args: argparse.Namespace) -> int:
             print("Nessun risultato.")
             return 0
         for row in results:
-            print(f"[{row['id']}] {row['filename']}  (tema: {row['theme']})")
-            print(f"    percorso: {row['current_path']}")
+            print(f"[{row['id']}] {row['filename']}")
+            _print_result_details(row)
             print(f"    estratto: {row['snippet']}")
     return 0
 
@@ -244,8 +251,8 @@ def cmd_find(args: argparse.Namespace) -> int:
             print("Nessun file trovato con questa parola chiave.")
             return 0
         for row in rows:
-            print(f"[{row['id']}] {row['filename']}  (tema: {row['theme']})")
-            print(f"    percorso: {row['current_path']}")
+            print(f"[{row['id']}] {row['filename']}")
+            _print_result_details(row)
     return 0
 
 
@@ -297,8 +304,11 @@ def cmd_cerca(args: argparse.Namespace) -> int:
                 continue
 
             for i, row in enumerate(rows, start=1):
-                print(f"  {i}. {row['filename']}  (tema: {row['theme']})")
-                print(f"      {row['current_path']}")
+                print(f"  {i}. {row['filename']}")
+                print(f"      tipo: {row.get('extension') or '(nessuna estensione)'}"
+                      f"  -  scritto il: {row.get('modified_at') or 'n/d'}")
+                print(f"      percorso: {row['current_path']}")
+                print(f"      parole chiave: {row.get('theme_keywords') or '-'}")
 
             try:
                 choice = input("Numero del file (vuoto per nuova ricerca): ").strip()

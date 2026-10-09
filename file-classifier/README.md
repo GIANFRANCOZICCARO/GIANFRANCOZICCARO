@@ -108,7 +108,21 @@ file-classifier --db archivio.db keywords
 
 # cerca i file associati a una parola chiave (anche parziale)
 file-classifier --db archivio.db find fattura
+```
 
+Per ogni file trovato, `find` (e anche `query`) mostrano: le parole chiave
+associate, il tipo di file (estensione), dove si trova (percorso) e quando
+è stato scritto (data di ultima modifica):
+
+```
+[3] fattura_gennaio.txt
+    tipo: .txt
+    percorso: D:\Documenti\fattura_gennaio.txt
+    scritto il: 2026-01-15T10:30:00
+    parole chiave: fattura, iva, pagamento
+```
+
+```bash
 # apre il file con id 3 (mostrato da 'find' o da 'query') con l'applicazione predefinita
 file-classifier --db archivio.db open 3
 
@@ -161,9 +175,12 @@ file-classifier --db archivio.db sync --loop
 file-classifier --db archivio.db sync --loop --interval 2
 ```
 
-Per farlo girare automaticamente ogni ora senza tenere un terminale aperto,
-l'opzione più robusta (sopravvive ai riavvii) è usare lo scheduler del
-sistema invece di `--loop`:
+**`sync` è un comando come un altro**: si può lanciare in qualsiasi momento,
+quante volte si vuole, indipendentemente dall'orario — l'esecuzione ogni ora
+è solo un modo *automatico* di richiamarlo, non l'unico. Per farlo girare
+automaticamente ogni ora senza tenere un terminale aperto, l'opzione più
+robusta (sopravvive ai riavvii) è usare lo scheduler del sistema invece di
+`--loop`:
 
 ```powershell
 # Windows: Pianificazione attività, ogni ora
@@ -174,6 +191,47 @@ schtasks /create /tn "FileClassifierSync" /tr "C:\percorso\.venv312\Scripts\file
 # Linux/macOS: crontab -e
 0 * * * * /percorso/.venv/bin/file-classifier --db /percorso/archivio.db sync
 ```
+
+## Lanciare sync e cerca con un'icona (barra delle applicazioni)
+
+Nella cartella `scripts/` ci sono degli script pronti per lanciare `sync` e
+`cerca` con un doppio clic, senza aprire un terminale e digitare il comando
+ogni volta:
+
+- `scripts/windows/sync.bat` e `scripts/windows/cerca.bat` (Windows)
+- `scripts/unix/sync.sh` e `scripts/unix/cerca.sh` (Linux/macOS)
+
+In testa a ciascuno script ci sono due righe da modificare una sola volta,
+con il percorso dell'ambiente virtuale e del database:
+
+```bat
+set VENV_PYTHON=%~dp0..\..\.venv312\Scripts\python.exe
+set FC_DB=%~dp0..\..\file_classifier.db
+```
+
+Di default puntano all'ambiente virtuale e al database dentro la cartella
+del progetto (come creati seguendo questo README); se li hai messi altrove,
+aggiorna questi due percorsi.
+
+**Per metterlo nella barra delle applicazioni di Windows** (es. `cerca.bat`,
+l'agente di ricerca, per averlo sempre a portata di clic):
+
+1. Clic destro su `cerca.bat` → **Invia a → Desktop (crea collegamento)**
+   (crea un collegamento `.lnk`, necessario perché Windows non permette di
+   aggiungere un file `.bat` direttamente alla barra).
+2. Clic destro sul collegamento sul desktop → **Aggiungi a Start**
+   (se non compare "Aggiungi alla barra delle applicazioni" direttamente).
+3. Dal menu Start, clic destro sul riquadro appena creato → **Aggiungi alla
+   barra delle applicazioni** (oppure trascina il riquadro dal menu Start
+   alla barra delle applicazioni).
+
+La stessa procedura vale per `sync.bat`, utile per avere un modo immediato
+di controllare nuovi file/cestino quando si vuole, senza aspettare il
+prossimo giro pianificato.
+
+Su Linux/macOS l'equivalente è creare un launcher (un file `.desktop` su
+Linux, un'app Automator o un collegamento nel Dock su macOS) che esegua
+`scripts/unix/cerca.sh` o `scripts/unix/sync.sh`.
 
 ## Note di sicurezza
 
@@ -207,6 +265,9 @@ file_classifier/
   cli.py         # comandi: index, drives, classify, organize, sync, query,
                  # themes, keywords, find, open, cerca
 tests/           # test automatici per ciascun modulo
+scripts/
+  windows/       # sync.bat, cerca.bat (lancio con un'icona/barra delle applicazioni)
+  unix/          # sync.sh, cerca.sh (equivalenti per Linux/macOS)
 ```
 
 ## Percorsi e progresso

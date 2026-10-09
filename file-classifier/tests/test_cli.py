@@ -56,7 +56,9 @@ def test_find_command(tmp_path, capsys):
     assert cli.main(["--db", str(db_path), "find", "fattura"]) == 0
     out = capsys.readouterr().out
     assert "fattura_gennaio.txt" in out
-    assert "tema: fattura-iva" in out
+    assert "tipo: .txt" in out
+    assert "parole chiave: fattura, iva" in out
+    assert "scritto il: t" in out
 
 
 def test_find_command_no_match(tmp_path, capsys):
