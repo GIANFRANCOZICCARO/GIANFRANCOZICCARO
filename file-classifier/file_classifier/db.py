@@ -356,6 +356,54 @@ class FileDatabase:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def _file_ids_for_keyword(self, keyword: str) -> set[int]:
+        rows = self._conn.execute(
+            "SELECT DISTINCT file_id FROM file_keywords WHERE keyword LIKE ?",
+            (f"%{keyword}%",),
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def find_by_keyword_query(self, terms: list[tuple[str, str]], limit: int = 50) -> list[dict]:
+        """Cerca combinando più parole chiave (fino a 4) con AND/OR/NOT,
+        valutati da sinistra a destra. 'terms' è una lista di (operatore,
+        parola_chiave); l'operatore del primo elemento viene ignorato (la
+        prima parola chiave stabilisce l'insieme di partenza). Operatori
+        validi per i successivi: 'AND', 'OR', 'NOT' (maiuscole/minuscole
+        indifferenti)."""
+        if not terms:
+            return []
+
+        _, first_keyword = terms[0]
+        result_ids = self._file_ids_for_keyword(first_keyword)
+
+        for operator, keyword in terms[1:]:
+            ids = self._file_ids_for_keyword(keyword)
+            op = operator.upper()
+            if op == "AND":
+                result_ids &= ids
+            elif op == "OR":
+                result_ids |= ids
+            elif op == "NOT":
+                result_ids -= ids
+            else:
+                raise ValueError(f"operatore non valido: {operator!r} (usare AND/OR/NOT)")
+
+        if not result_ids:
+            return []
+
+        placeholders = ", ".join("?" * len(result_ids))
+        rows = self._conn.execute(
+            f"""
+            SELECT id, filename, current_path, extension, modified_at, theme, theme_keywords
+            FROM files
+            WHERE id IN ({placeholders})
+            ORDER BY filename
+            LIMIT ?
+            """,
+            (*result_ids, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def themes_summary(self) -> list[dict]:
         rows = self._conn.execute(
             """

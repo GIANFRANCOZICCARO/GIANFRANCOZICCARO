@@ -140,7 +140,7 @@ def test_cerca_interactive_opens_selected_file(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "db.sqlite"
     _seed(db_path, source)
 
-    answers = iter(["fattura", "1", "a", ""])
+    answers = iter(["fattura", "", "1", "a", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     calls = []
@@ -156,7 +156,7 @@ def test_cerca_interactive_opens_with_program(tmp_path, monkeypatch):
     db_path = tmp_path / "db.sqlite"
     _seed(db_path, source)
 
-    answers = iter(["fattura", "1", "c", "notepad.exe", ""])
+    answers = iter(["fattura", "", "1", "c", "notepad.exe", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     calls = []
@@ -172,7 +172,7 @@ def test_cerca_interactive_reveals_folder(tmp_path, monkeypatch):
     db_path = tmp_path / "db.sqlite"
     _seed(db_path, source)
 
-    answers = iter(["fattura", "1", "d", ""])
+    answers = iter(["fattura", "", "1", "d", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     calls = []
@@ -188,11 +188,123 @@ def test_cerca_interactive_no_results_then_quit(tmp_path, monkeypatch, capsys):
     db_path = tmp_path / "db.sqlite"
     _seed(db_path, source)
 
-    answers = iter(["inesistente", ""])
+    answers = iter(["inesistente", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     assert cli.main(["--db", str(db_path), "cerca"]) == 0
     assert "Nessun file trovato" in capsys.readouterr().out
+
+
+def _seed_multi(db_path: Path, source: Path) -> None:
+    with FileDatabase(db_path) as db:
+        specs = [
+            ("fattura_gennaio.txt", ["fattura", "iva"]),
+            ("fattura_bozza.txt", ["fattura", "bozza"]),
+            ("ricetta.txt", ["ricetta"]),
+        ]
+        for i, (name, keywords) in enumerate(specs):
+            target = source / name
+            target.write_text(" ".join(keywords), encoding="utf-8")
+            fid = db.upsert_file(
+                filename=target.name, original_path=str(target), current_path=str(target),
+                extension=".txt", size_bytes=target.stat().st_size, modified_at="t",
+                content_hash=f"h{i}", content=" ".join(keywords), extraction_error=None,
+            )
+            db.set_theme(fid, "tema", keywords)
+
+
+def test_cerca_shows_available_keywords(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    answers = iter(["", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+    out = capsys.readouterr().out
+    assert "Parole chiave disponibili" in out
+    assert "fattura: 2 file" in out
+    assert "ricetta: 1 file" in out
+
+
+def test_cerca_and_combination(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    # parola chiave 1 = fattura, operatore = a(nd), parola chiave 2 = bozza,
+    # poi vuoto per cercare, vuoto per non scegliere file, vuoto per uscire.
+    answers = iter(["fattura", "a", "bozza", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+    out = capsys.readouterr().out
+    assert "fattura_bozza.txt" in out
+    assert "fattura_gennaio.txt" not in out
+    assert "ricetta.txt" not in out
+
+
+def test_cerca_not_combination(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    answers = iter(["fattura", "n", "bozza", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+    out = capsys.readouterr().out
+    assert "fattura_gennaio.txt" in out
+    assert "fattura_bozza.txt" not in out
+
+
+def test_cerca_or_combination(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    answers = iter(["iva", "o", "ricetta", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+    out = capsys.readouterr().out
+    assert "fattura_gennaio.txt" in out
+    assert "ricetta.txt" in out
+    assert "fattura_bozza.txt" not in out
+
+
+def test_cerca_stops_at_four_terms(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    # 4 parole chiave (il massimo): dopo la quarta non deve chiedere un
+    # altro operatore, deve passare direttamente alla ricerca.
+    answers = iter(["fattura", "a", "iva", "o", "bozza", "n", "ricetta", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+
+
+def test_cerca_rejects_invalid_operator_then_accepts(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    _seed_multi(db_path, source)
+
+    answers = iter(["fattura", "xor", "a", "bozza", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "cerca"]) == 0
+    out = capsys.readouterr().out
+    assert "Operatore non valido" in out
+    assert "fattura_bozza.txt" in out
 
 
 def test_index_all_drives(tmp_path, monkeypatch, capsys):

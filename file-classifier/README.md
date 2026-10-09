@@ -17,9 +17,18 @@ servizi esterni.
 2. **`classify`** — analizza i contenuti indicizzati con **TF-IDF +
    clustering (KMeans)** e assegna a ogni file un **tema** e un insieme di
    **parole chiave** (ricavate dai termini più rilevanti del gruppo), senza
-   bisogno di categorie predefinite. Le parole chiave vengono salvate anche
-   in una tabella dedicata (`file_keywords`), così da poterle interrogare
-   singolarmente.
+   bisogno di categorie predefinite. Le parole chiave derivano sia dal nome
+   del file che dal contenuto (il nome pesa di più, utile quando il
+   contenuto è vuoto o breve) e vengono salvate anche in una tabella
+   dedicata (`file_keywords`), così da poterle interrogare singolarmente.
+
+   **Limiti dell'estrazione del contenuto**: solo i tipi di file elencati
+   sopra (testo semplice, PDF, DOCX) vengono letti davvero. Le **immagini**
+   (JPG, PNG, ecc.) non vengono analizzate nel contenuto — nessun OCR, nessun
+   riconoscimento visivo — e finiscono classificate solo in base al nome
+   del file. Lo stesso vale per i **file compilati** (`.exe`, `.dll`,
+   `.pyc`, ecc.): non essendo testo, non vengono letti, solo indicizzati
+   per nome.
 3. **`organize`** — genera un piano per copiare (o spostare) i file in
    cartelle `<destinazione>/<tema>/nomefile`. Di default è una simulazione
    (**dry-run**): stampa le operazioni senza toccare i file finché non si
@@ -192,13 +201,39 @@ file-classifier --db archivio.db open 3 --reveal
 ```
 
 Per un uso più immediato, il comando `cerca` fa da **agente interattivo**:
-chiede una parola chiave, mostra i file trovati e permette di scegliere se
-aprire il file, la sua cartella, o aprirlo con un programma specifico —
-tutto in un unico ciclo, senza dover ricopiare ogni volta l'id del file.
+mostra subito le parole chiave disponibili (non serve ricordarle o
+indovinarle), chiede fino a **4 parole chiave combinabili con AND/OR/NOT**,
+mostra i file trovati e permette di scegliere se aprire il file, la sua
+cartella, o aprirlo con un programma specifico — tutto in un unico ciclo,
+senza dover ricopiare ogni volta l'id del file.
 
 ```bash
 file-classifier --db archivio.db cerca
 ```
+
+```
+Parole chiave disponibili:
+  fattura: 12 file
+  iva: 8 file
+  bozza: 3 file
+  ricetta: 5 file
+
+Parola chiave 1 (vuoto per uscire): fattura
+Operatore per la parola chiave 2 - [a]nd, [o]r, [n]ot, vuoto per cercare subito: n
+Parola chiave 2: bozza
+Operatore per la parola chiave 3 - [a]nd, [o]r, [n]ot, vuoto per cercare subito:
+```
+
+In questo esempio la ricerca è "fattura, ma non bozza" (`fattura AND NOT
+bozza`, cioè "fattura" meno i file che hanno anche la parola chiave
+"bozza"). Gli operatori si applicano nell'ordine in cui vengono inseriti,
+da sinistra a destra:
+- **and** → restringe ai file che hanno anche l'altra parola chiave;
+- **or** → aggiunge ai risultati anche i file con l'altra parola chiave;
+- **not** → togli dai risultati i file con l'altra parola chiave.
+
+Si può lasciare vuoto l'operatore in qualsiasi momento (anche dopo la
+prima parola chiave) per cercare subito con quello che si è inserito finora.
 
 Questi comandi vanno eseguiti sul computer dove si trovano i file (aprono
 realmente il file manager o un programma): usano `explorer` su Windows,

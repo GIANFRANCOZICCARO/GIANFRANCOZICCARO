@@ -312,3 +312,76 @@ def test_remap_path_prefix_does_not_affect_unrelated_siblings(tmp_path: Path):
         updated = db.remap_path_prefix("/mnt/dati", "/mnt/dati2")
         assert updated == 0
         assert db.get_file(fid).current_path == "/mnt/dati-altro/a.txt"
+
+
+def _seed_keyword_files(db):
+    specs = [
+        ("fattura_gennaio.txt", ["fattura", "iva"]),
+        ("fattura_febbraio.txt", ["fattura", "iva", "bozza"]),
+        ("fattura_marzo.txt", ["fattura"]),
+        ("ricetta_torta.txt", ["ricetta", "torta"]),
+    ]
+    ids = {}
+    for i, (name, keywords) in enumerate(specs):
+        fid = db.upsert_file(
+            filename=name, original_path=f"/data/{name}", current_path=f"/data/{name}",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash=f"h{i}",
+            content="x", extraction_error=None,
+        )
+        db.set_theme(fid, "tema", keywords)
+        ids[name] = fid
+    return ids
+
+
+def test_find_by_keyword_query_single_term(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        ids = _seed_keyword_files(db)
+        rows = db.find_by_keyword_query([("", "ricetta")])
+        assert {r["filename"] for r in rows} == {"ricetta_torta.txt"}
+
+
+def test_find_by_keyword_query_and(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        rows = db.find_by_keyword_query([("", "fattura"), ("AND", "bozza")])
+        assert {r["filename"] for r in rows} == {"fattura_febbraio.txt"}
+
+
+def test_find_by_keyword_query_or(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        rows = db.find_by_keyword_query([("", "ricetta"), ("OR", "bozza")])
+        assert {r["filename"] for r in rows} == {"ricetta_torta.txt", "fattura_febbraio.txt"}
+
+
+def test_find_by_keyword_query_not(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        rows = db.find_by_keyword_query([("", "fattura"), ("NOT", "bozza")])
+        assert {r["filename"] for r in rows} == {"fattura_gennaio.txt", "fattura_marzo.txt"}
+
+
+def test_find_by_keyword_query_chain_of_four(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        rows = db.find_by_keyword_query(
+            [("", "fattura"), ("AND", "iva"), ("NOT", "bozza"), ("OR", "torta")]
+        )
+        assert {r["filename"] for r in rows} == {"fattura_gennaio.txt", "ricetta_torta.txt"}
+
+
+def test_find_by_keyword_query_empty_terms():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        with _make_db(Path(d)) as db:
+            assert db.find_by_keyword_query([]) == []
+
+
+def test_find_by_keyword_query_invalid_operator(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        try:
+            db.find_by_keyword_query([("", "fattura"), ("XOR", "iva")])
+            assert False, "doveva sollevare ValueError"
+        except ValueError:
+            pass

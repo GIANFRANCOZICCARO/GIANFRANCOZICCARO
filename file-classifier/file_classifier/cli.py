@@ -516,23 +516,70 @@ def cmd_open(args: argparse.Namespace) -> int:
     return 0
 
 
+_OPERATOR_INPUT_MAP = {"a": "AND", "and": "AND", "o": "OR", "or": "OR", "n": "NOT", "not": "NOT"}
+_MAX_SEARCH_TERMS = 4
+
+
+def _prompt_search_terms(max_terms: int = _MAX_SEARCH_TERMS) -> list[tuple[str, str]] | None:
+    """Chiede fino a 'max_terms' parole chiave, combinabili con AND/OR/NOT
+    (valutati nell'ordine in cui vengono inseriti). Ritorna None se l'utente
+    vuole uscire (prima parola chiave lasciata vuota)."""
+    try:
+        first = input("\nParola chiave 1 (vuoto per uscire): ").strip()
+    except EOFError:
+        return None
+    if not first:
+        return None
+
+    terms = [("", first)]
+    while len(terms) < max_terms:
+        n = len(terms) + 1
+        try:
+            op = input(
+                f"Operatore per la parola chiave {n} - [a]nd, [o]r, [n]ot, "
+                "vuoto per cercare subito: "
+            ).strip().lower()
+        except EOFError:
+            break
+        if not op:
+            break
+        if op not in _OPERATOR_INPUT_MAP:
+            print("Operatore non valido: usa a (and), o (or), n (not), oppure lascia vuoto.")
+            continue
+        try:
+            keyword = input(f"Parola chiave {n}: ").strip()
+        except EOFError:
+            break
+        if not keyword:
+            break
+        terms.append((_OPERATOR_INPUT_MAP[op], keyword))
+
+    return terms
+
+
 def cmd_cerca(args: argparse.Namespace) -> int:
-    """Agente interattivo: data una parola chiave trovata da 'keywords', mostra i
-    file corrispondenti e permette di aprirne la cartella o il file (con un
-    programma specifico, se richiesto)."""
+    """Agente interattivo: mostra le parole chiave disponibili, chiede fino a
+    4 parole chiave combinabili con AND/OR/NOT, mostra i file corrispondenti e
+    permette di aprirne la cartella o il file (con un programma specifico,
+    se richiesto)."""
     with FileDatabase(args.db) as db:
         _remap_connected_roots(db)
         while True:
-            try:
-                keyword = input("\nParola chiave (vuoto per uscire): ").strip()
-            except EOFError:
-                break
-            if not keyword:
+            keyword_rows = db.keywords_summary()
+            if keyword_rows:
+                print("\nParole chiave disponibili:")
+                for row in keyword_rows:
+                    print(f"  {row['keyword']}: {row['n_files']} file")
+            else:
+                print("\nNessuna parola chiave trovata. Esegui prima 'classify' o 'sync'.")
+
+            terms = _prompt_search_terms()
+            if terms is None:
                 break
 
-            rows = db.find_by_keyword(keyword, limit=args.limit)
+            rows = db.find_by_keyword_query(terms, limit=args.limit)
             if not rows:
-                print("Nessun file trovato con questa parola chiave.")
+                print("Nessun file trovato con questa combinazione di parole chiave.")
                 continue
 
             for i, row in enumerate(rows, start=1):
