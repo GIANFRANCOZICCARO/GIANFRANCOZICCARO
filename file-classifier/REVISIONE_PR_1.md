@@ -34,7 +34,7 @@ che dimostrasse la conservazione dei file preesistenti. Aggiunta nella patch.
 | file_classifier/db.py | FTS con trigger; ID upsert errato e identità percorsi incompleta, corretti. |
 | file_classifier/extractor.py | Hash streaming, estrazione e limiti presenti. Lettura testo intero prima del limite; hidden Windows e accessi negati restano limiti. |
 | file_classifier/organizer.py | Collisioni pianificate gestite, ma esecuzione sovrascrivente e percorsi non validati; corretti nei casi descritti. |
-| pyproject.toml | Packaging/entrypoint coerenti, Python >=3.10; CI proposta su 3.10 e 3.12. |
+| pyproject.toml | Packaging/entrypoint coerenti, Python >=3.11; CI proposta su 3.11 e 3.12. |
 | requirements.txt | Dipendenze coerenti con pyproject; limiti inferiori senza lock. |
 | tests/test_classifier.py | 4 test, clustering/singolo/vuoto/slug; mancava vocabulario vuoto. |
 | tests/test_db.py | 4 test; idempotenza verificata senza inserimento intermedio, quindi lastrowid errato non rilevato. |
