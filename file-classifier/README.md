@@ -9,20 +9,27 @@ servizi esterni.
 
 ## Come funziona
 
-1. **`index`** — scansiona una cartella ricorsivamente, estrae il testo dai
+1. **`index`** — scansiona una cartella (o, con `--all-drives`, tutti i
+   dischi/unità individuati sul sistema) ricorsivamente, estrae il testo dai
    file (txt, md, csv, json, sorgenti di codice, PDF, DOCX, ecc.) e salva
    nel database: nome file, percorso, dimensione, data di modifica, hash del
    contenuto e testo estratto.
 2. **`classify`** — analizza i contenuti indicizzati con **TF-IDF +
-   clustering (KMeans)** e assegna a ogni file un **tema** (etichetta
-   derivata dalle parole chiave più rilevanti del gruppo), senza bisogno di
-   categorie predefinite.
+   clustering (KMeans)** e assegna a ogni file un **tema** e un insieme di
+   **parole chiave** (ricavate dai termini più rilevanti del gruppo), senza
+   bisogno di categorie predefinite. Le parole chiave vengono salvate anche
+   in una tabella dedicata (`file_keywords`), così da poterle interrogare
+   singolarmente.
 3. **`organize`** — genera un piano per copiare (o spostare) i file in
    cartelle `<destinazione>/<tema>/nomefile`. Di default è una simulazione
    (**dry-run**): stampa le operazioni senza toccare i file finché non si
    passa `--execute`.
 4. **`query`** — ricerca full-text (SQLite FTS5) su nome file, tema e
    contenuto, con estratto testuale del punto in cui compare il termine.
+5. **`keywords` / `find` / `open` / `cerca`** — interrogano la tabella delle
+   parole chiave e permettono di aprire direttamente la cartella o il file
+   trovato (eventualmente con un programma specifico). Vedi la sezione
+   dedicata più sotto.
 
 Il database (`file_classifier.db` di default) è un normale file SQLite:
 può essere interrogato anche direttamente con `sqlite3` o qualunque client
@@ -37,8 +44,8 @@ pip install -e .
 ```
 
 Dipendenze: `scikit-learn`, `numpy` (classificazione), `pypdf` (PDF),
-`python-docx` (DOCX). I tipi di testo semplice (txt, md, csv, codice, ecc.)
-non richiedono librerie aggiuntive.
+`python-docx` (DOCX), `psutil` (individuazione dei dischi). I tipi di testo
+semplice (txt, md, csv, codice, ecc.) non richiedono librerie aggiuntive.
 
 ## Uso
 
@@ -71,6 +78,55 @@ Interrogazione diretta via SQL (facoltativa):
 sqlite3 archivio.db "SELECT filename, current_path, theme FROM files WHERE theme = 'fattura-gennaio-febbraio';"
 ```
 
+## Scansionare tutti i dischi
+
+```bash
+# elenca i dischi/unità individuati sul sistema (es. C:\, D:\ su Windows; /, /mnt/dati su Linux/macOS)
+file-classifier drives
+
+# indicizza tutti i dischi individuati, invece di una singola cartella
+file-classifier --db archivio.db index --all-drives
+```
+
+I filesystem virtuali o di sistema (proc, tmpfs, cgroup, ecc.) vengono
+esclusi automaticamente: restano solo i dischi/unità su cui l'utente può
+avere documenti.
+
+## Cercare per parola chiave e aprire il file trovato
+
+Dopo `classify`, ogni parola chiave individuata è salvata in una tabella
+dedicata e interrogabile:
+
+```bash
+# tabella delle parole chiave individuate, con il numero di file per ciascuna
+file-classifier --db archivio.db keywords
+
+# cerca i file associati a una parola chiave (anche parziale)
+file-classifier --db archivio.db find fattura
+
+# apre il file con id 3 (mostrato da 'find' o da 'query') con l'applicazione predefinita
+file-classifier --db archivio.db open 3
+
+# apre il file con un programma specifico
+file-classifier --db archivio.db open 3 --with "notepad.exe"
+
+# apre la cartella che contiene il file, invece del file stesso
+file-classifier --db archivio.db open 3 --reveal
+```
+
+Per un uso più immediato, il comando `cerca` fa da **agente interattivo**:
+chiede una parola chiave, mostra i file trovati e permette di scegliere se
+aprire il file, la sua cartella, o aprirlo con un programma specifico —
+tutto in un unico ciclo, senza dover ricopiare ogni volta l'id del file.
+
+```bash
+file-classifier --db archivio.db cerca
+```
+
+Questi comandi vanno eseguiti sul computer dove si trovano i file (aprono
+realmente il file manager o un programma): usano `explorer` su Windows,
+`open` su macOS e `xdg-open` su Linux.
+
 ## Note di sicurezza
 
 - `organize` di default è **dry-run**: nessun file viene toccato finché non
@@ -94,10 +150,13 @@ pytest
 ```
 file_classifier/
   extractor.py   # estrazione del testo dai file (txt, pdf, docx, ...)
-  db.py          # schema SQLite + indice full-text (FTS5)
+  drives.py      # individuazione dei dischi/unità presenti sul sistema
+  db.py          # schema SQLite + indice full-text (FTS5) + tabella parole chiave
   classifier.py  # classificazione per argomento (TF-IDF + KMeans)
   organizer.py   # pianificazione ed esecuzione della riorganizzazione
-  cli.py         # comandi: index, classify, organize, query, themes
+  opener.py      # apertura di file/cartelle nel file manager del sistema
+  cli.py         # comandi: index, drives, classify, organize, query,
+                 # themes, keywords, find, open, cerca
 tests/           # test automatici per ciascun modulo
 ```
 

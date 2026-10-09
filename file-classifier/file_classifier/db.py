@@ -29,6 +29,14 @@ CREATE TABLE IF NOT EXISTS files (
     organized_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS file_keywords (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    keyword TEXT NOT NULL,
+    PRIMARY KEY (file_id, keyword)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_keywords_keyword ON file_keywords(keyword);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
     filename,
     content,
@@ -162,6 +170,11 @@ class FileDatabase:
                 "UPDATE files SET theme = ?, theme_keywords = ? WHERE id = ?",
                 (theme, ", ".join(keywords), file_id),
             )
+            conn.execute("DELETE FROM file_keywords WHERE file_id = ?", (file_id,))
+            conn.executemany(
+                "INSERT OR IGNORE INTO file_keywords (file_id, keyword) VALUES (?, ?)",
+                [(file_id, keyword) for keyword in dict.fromkeys(keywords)],
+            )
 
     def set_current_path(self, file_id: int, new_path: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -203,6 +216,34 @@ class FileDatabase:
             LIMIT ?
             """,
             (fts_query, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def keywords_summary(self) -> list[dict]:
+        """La tabella delle parole chiave individuate dalla classificazione,
+        con il numero di file a cui ciascuna è associata (usata per la ricerca)."""
+        rows = self._conn.execute(
+            """
+            SELECT keyword, COUNT(*) AS n_files
+            FROM file_keywords
+            GROUP BY keyword
+            ORDER BY n_files DESC, keyword
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def find_by_keyword(self, keyword: str, limit: int = 50) -> list[dict]:
+        """Cerca i file associati a una parola chiave (anche come sottostringa)."""
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT f.id, f.filename, f.current_path, f.theme, f.theme_keywords
+            FROM file_keywords k
+            JOIN files f ON f.id = k.file_id
+            WHERE k.keyword LIKE ?
+            ORDER BY f.filename
+            LIMIT ?
+            """,
+            (f"%{keyword}%", limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
