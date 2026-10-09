@@ -35,6 +35,10 @@ servizi esterni.
    file non più al loro posto (cestinati o cancellati fisicamente). Con
    `--loop` resta in esecuzione e ripete il controllo a intervalli (un'ora
    di default). Vedi la sezione dedicata più sotto.
+7. **`agente`** — con più dischi, elenca quelli collegati distinguendo i
+   **nuovi** dai **già conosciuti** (riconosciuti dall'identità del disco,
+   non dalla lettera C:/D:/..., che può cambiare) e sottopone quello scelto
+   ad acquisizione o revisione. Vedi la sezione dedicata più sotto.
 
 Il database (`file_classifier.db` di default) è un normale file SQLite:
 può essere interrogato anche direttamente con `sqlite3` o qualunque client
@@ -96,6 +100,59 @@ file-classifier --db archivio.db index --all-drives
 I filesystem virtuali o di sistema (proc, tmpfs, cgroup, ecc.) vengono
 esclusi automaticamente: restano solo i dischi/unità su cui l'utente può
 avere documenti.
+
+## Scegliere quale disco sottoporre: `agente`
+
+Quando ci sono più dischi (es. più hard disk esterni), `agente` elenca
+quelli **attualmente collegati** e per ciascuno dice se è **nuovo** o
+**già conosciuto** — e poi sottopone quello scelto all'azione giusta:
+
+```bash
+# elenca i dischi collegati (conosciuti/nuovi) e chiede quale sottoporre
+file-classifier --db archivio.db agente
+
+# sottopone direttamente un disco specifico, senza scelta interattiva
+file-classifier --db archivio.db agente --drive E:
+
+# sottopone tutti i dischi collegati, ciascuno secondo il proprio stato
+file-classifier --db archivio.db agente --all
+```
+
+- Se il disco è **nuovo** (mai visto prima), lo sottopone ad
+  **acquisizione**: lo indicizza da zero e classifica i file.
+- Se è **già conosciuto** (già indicizzato in precedenza), lo sottopone a
+  **revisione**: lo stesso controllo di `sync` — nuovi file, cestino,
+  cancellazioni — ma limitato a quel disco.
+
+### Riconoscimento per identità del disco, non per lettera
+
+Un disco esterno può ricevere una **lettera diversa** (`D:`, `E:`, ...) a
+seconda di quando e dove viene collegato: la stessa lettera non garantisce
+che sia lo stesso disco, e lo stesso disco può comparire con lettere
+diverse. Per questo `agente` (e `sync`) non si basano sulla lettera per
+riconoscere un disco già noto, ma sull'**identità specifica del disco**:
+il numero di serie del volume su Windows (lo stesso usato da Windows per
+riconoscere un'unità, indipendente da dove viene montata), l'UUID del
+filesystem su Linux. La lettera resta solo l'etichetta con cui il disco
+viene presentato all'utente.
+
+Se un disco già conosciuto viene ritrovato con una lettera diversa da
+quella registrata l'ultima volta, il programma lo riconosce dalla sua
+identità e **aggiorna da sé** tutti i percorsi registrati (compresi quelli
+dei singoli file già indicizzati) sulla nuova lettera — senza bisogno di
+reindicizzare da capo, e senza scambiarlo per cancellato. Lo stesso
+controllo avviene automaticamente anche prima di `find`, `query`, `open` e
+`cerca`, così la ricerca e l'apertura dei file usano sempre la lettera
+attuale del disco.
+
+Un disco registrato ma **non collegato** in questo momento (es. un HD
+esterno scollegato) viene semplicemente saltato da `sync`/`agente`: i suoi
+file restano nel database così come sono, senza essere considerati
+cancellati solo perché il disco non è al momento raggiungibile.
+
+Su piattaforme dove l'identità del disco non è determinabile, il
+comportamento ricade su quello precedente a questa funzionalità (confronto
+per percorso esatto).
 
 ## Cercare per parola chiave e aprire il file trovato
 
@@ -294,14 +351,15 @@ pytest
 file_classifier/
   extractor.py   # estrazione del testo dai file (txt, pdf, docx, ...)
   drives.py      # individuazione dei dischi/unità presenti sul sistema
+  volume_id.py   # identità stabile di un disco (seriale/UUID), non la lettera
   trash.py       # individuazione dei file nel cestino (per 'sync')
   shutdown_guard.py  # blocco/spegnimento di Windows per 'sync --block-shutdown'
   db.py          # schema SQLite + indice full-text (FTS5) + tabella parole chiave
   classifier.py  # classificazione per argomento (TF-IDF + KMeans)
   organizer.py   # pianificazione ed esecuzione della riorganizzazione
   opener.py      # apertura di file/cartelle nel file manager del sistema
-  cli.py         # comandi: index, drives, classify, organize, sync, query,
-                 # themes, keywords, find, open, cerca
+  cli.py         # comandi: index, drives, agente, classify, organize, sync,
+                 # query, themes, keywords, find, open, cerca
 tests/           # test automatici per ciascun modulo
 scripts/
   windows/       # sync.bat, cerca.bat (lancio con un'icona/barra delle applicazioni)

@@ -235,3 +235,80 @@ def test_migrates_legacy_database_without_status_column(tmp_path: Path):
     with FileDatabase(db_path) as db:
         record = db.all_files()[0]
         assert record.status == "active"
+
+
+def test_add_scan_root_stores_volume_identity(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        db.add_scan_root("/mnt/dati/documenti", volume_id="UUID-1", volume_root="/mnt/dati", relative_path="documenti")
+        detail = db.scan_roots_detail()
+        assert len(detail) == 1
+        assert detail[0]["volume_id"] == "UUID-1"
+        assert detail[0]["relative_path"] == "documenti"
+
+
+def test_add_scan_root_without_volume_identity_defaults_to_none(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        db.add_scan_root("/mnt/dati")
+        detail = db.scan_roots_detail()
+        assert detail[0]["volume_id"] is None
+
+
+def test_add_scan_root_updates_identity_on_reregistration(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        db.add_scan_root("/mnt/dati")
+        db.add_scan_root("/mnt/dati", volume_id="UUID-1", volume_root="/mnt/dati", relative_path="")
+        detail = db.scan_roots_detail()
+        assert len(detail) == 1
+        assert detail[0]["volume_id"] == "UUID-1"
+
+
+def test_update_scan_root_path_renames_root(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        db.add_scan_root("/mnt/dati/documenti", volume_id="UUID-1", volume_root="/mnt/dati", relative_path="documenti")
+        db.update_scan_root_path("/mnt/dati/documenti", "/mnt/dati2/documenti", "/mnt/dati2")
+        detail = db.scan_roots_detail()
+        assert detail[0]["path"] == "/mnt/dati2/documenti"
+        assert detail[0]["volume_root"] == "/mnt/dati2"
+
+
+def test_remap_path_prefix_rewrites_matching_files(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid1 = db.upsert_file(
+            filename="a.txt", original_path="/mnt/dati/documenti/a.txt", current_path="/mnt/dati/documenti/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1", content="x", extraction_error=None,
+        )
+        fid2 = db.upsert_file(
+            filename="b.txt", original_path="/altro/b.txt", current_path="/altro/b.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h2", content="y", extraction_error=None,
+        )
+
+        updated = db.remap_path_prefix("/mnt/dati/documenti", "/mnt/dati2/documenti")
+
+        assert updated == 1
+        rec1 = db.get_file(fid1)
+        assert rec1.original_path == "/mnt/dati2/documenti/a.txt"
+        assert rec1.current_path == "/mnt/dati2/documenti/a.txt"
+        rec2 = db.get_file(fid2)
+        assert rec2.original_path == "/altro/b.txt"
+
+
+def test_remap_path_prefix_rewrites_exact_root_match(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/mnt/dati/a.txt", current_path="/mnt/dati/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1", content="x", extraction_error=None,
+        )
+        updated = db.remap_path_prefix("/mnt/dati", "/mnt/dati2")
+        assert updated == 1
+        assert db.get_file(fid).current_path == "/mnt/dati2/a.txt"
+
+
+def test_remap_path_prefix_does_not_affect_unrelated_siblings(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        fid = db.upsert_file(
+            filename="a.txt", original_path="/mnt/dati-altro/a.txt", current_path="/mnt/dati-altro/a.txt",
+            extension=".txt", size_bytes=5, modified_at="t", content_hash="h1", content="x", extraction_error=None,
+        )
+        updated = db.remap_path_prefix("/mnt/dati", "/mnt/dati2")
+        assert updated == 0
+        assert db.get_file(fid).current_path == "/mnt/dati-altro/a.txt"

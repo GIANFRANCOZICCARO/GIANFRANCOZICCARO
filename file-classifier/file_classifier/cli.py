@@ -14,12 +14,90 @@ from .classifier import classify_files
 from .db import FileDatabase
 from .drives import list_drives
 from .extractor import extract_file, iter_files
-from . import opener, shutdown_guard
+from . import opener, shutdown_guard, volume_id
 from .organizer import build_plan, execute_plan
-from .paths import path_key
+from .paths import path_key, within
 from .trash import find_in_trash, trash_candidate_dirs
 
 DEFAULT_DB = "file_classifier.db"
+
+
+def _volume_registration_info(root: Path) -> tuple[str | None, str | None, str | None]:
+    """Identità di volume, radice del volume e percorso relativo per 'root',
+    da passare a add_scan_root. Ritorna (None, None, None) se non
+    determinabile (es. piattaforma non supportata): in tal caso la radice
+    viene comunque registrata, solo senza protezione dal cambio di lettera."""
+    vol_root = volume_id.get_volume_root(root)
+    if vol_root is None:
+        return None, None, None
+    vol_id = volume_id.get_volume_id(root)
+    if vol_id is None:
+        return None, None, None
+    try:
+        rel = root.relative_to(vol_root)
+        relative_path = "" if str(rel) == "." else str(rel)
+    except ValueError:
+        relative_path = None
+    return vol_id, str(vol_root), relative_path
+
+
+def _remap_connected_roots(db: FileDatabase) -> list[dict]:
+    """Confronta i dischi collegati con le radici di scansione registrate,
+    usando l'identità di volume (non la lettera di unità/punto di montaggio,
+    che può cambiare a seconda di quando il disco viene collegato). Se una
+    radice nota risulta ricollegata con una lettera diversa, aggiorna da
+    sé il percorso registrato e i file che vi appartengono. Ritorna il
+    dettaglio delle radici registrate (con 'connected': bool e il percorso
+    già aggiornato se un cambio di lettera è stato rilevato e corretto)."""
+    details = db.scan_roots_detail()
+    connected_by_volume: dict[str, str] = {}
+    for mountpoint in list_drives():
+        vol = volume_id.get_volume_id(Path(mountpoint))
+        if vol:
+            connected_by_volume[vol] = mountpoint
+
+    results = []
+    for entry in details:
+        vol = entry["volume_id"]
+        if not vol:
+            # Identità non determinabile (piattaforma non supportata, o radice
+            # registrata prima di questa funzionalità): nessuna verifica
+            # possibile, si presume collegata come prima di questa funzionalità.
+            results.append({**entry, "connected": True})
+            continue
+
+        mountpoint = connected_by_volume.get(vol)
+        if mountpoint is None:
+            results.append({**entry, "connected": False})
+            continue
+
+        if not entry["volume_root"] or path_key(mountpoint) != path_key(entry["volume_root"]):
+            relative_path = entry.get("relative_path") or ""
+            new_path = str(Path(mountpoint) / relative_path) if relative_path else mountpoint
+            print(f"Disco riconosciuto con una lettera/percorso diverso: "
+                  f"{entry['path']} -> {new_path} (stessa identità di volume: {vol}).")
+            db.remap_path_prefix(entry["path"], new_path)
+            db.update_scan_root_path(entry["path"], new_path, mountpoint)
+            entry = {**entry, "path": path_key(new_path), "volume_root": path_key(mountpoint)}
+
+        results.append({**entry, "connected": True})
+
+    return results
+
+
+def _resolve_connected_roots(db: FileDatabase, announce_skipped: bool = True) -> list[Path]:
+    """Come _remap_connected_roots, ma ritorna direttamente le sole radici
+    attualmente collegate (pronte per 'sync'), avvisando di quelle note ma
+    non collegate in questo momento (così non vengono trattate per errore
+    come file cancellati)."""
+    roots = []
+    for entry in _remap_connected_roots(db):
+        if entry["connected"]:
+            roots.append(Path(entry["path"]))
+        elif announce_skipped:
+            vol_note = f" (id volume: {entry['volume_id']})" if entry["volume_id"] else ""
+            print(f"Disco non collegato in questo momento, saltato: {entry['path']}{vol_note}")
+    return roots
 
 
 def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False,
@@ -46,7 +124,8 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
     for root in roots:
         if not root.is_dir():
             continue
-        db.add_scan_root(root)
+        vol_id, vol_root, relative_path = _volume_registration_info(root)
+        db.add_scan_root(root, volume_id=vol_id, volume_root=vol_root, relative_path=relative_path)
         for path in iter_files(root):
             if path_key(path) in excluded:
                 continue
@@ -174,7 +253,13 @@ def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: in
             db.set_theme(result.file_id, result.theme, result.keywords)
         classified_count = len(unclassified)
 
-    missing = [r for r in db.all_files() if not Path(r.current_path).exists()]
+    # Solo i file sotto una delle radici effettivamente sottoposte a questo
+    # giro: un disco registrato ma non collegato in questo momento non deve
+    # far credere che i suoi file siano stati cancellati.
+    missing = [
+        r for r in db.all_files()
+        if not Path(r.current_path).exists() and any(within(Path(r.current_path), root) for root in roots)
+    ]
     trashed = deleted = 0
     trash_dirs = None
     for i, record in enumerate(missing, start=1):
@@ -210,8 +295,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     block_shutdown = args.block_shutdown or args.shutdown_when_done
 
     with FileDatabase(args.db) as db:
-        roots = [Path(r) for r in db.scan_roots()]
-        if not roots:
+        if not db.scan_roots():
             print("Errore: nessuna cartella/disco registrato. Esegui prima 'index'.", file=sys.stderr)
             return 1
 
@@ -231,7 +315,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
         with guard:
             while True:
-                _sync_once(db, roots, args.db, args.num_themes)
+                roots = _resolve_connected_roots(db)
+                if not roots:
+                    msg = "Errore: nessuno dei dischi/cartelle registrati risulta collegato in questo momento."
+                    if not args.loop:
+                        print(msg, file=sys.stderr)
+                        return 1
+                    print(msg + " Nuovo tentativo al prossimo giro.", file=sys.stderr)
+                else:
+                    _sync_once(db, roots, args.db, args.num_themes)
                 if not args.loop:
                     break
                 next_run = datetime.now() + timedelta(hours=args.interval)
@@ -252,6 +344,86 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agente(args: argparse.Namespace) -> int:
+    """Elenca i dischi collegati in questo momento, distinguendo quelli già
+    conosciuti (stessa identità di volume di una radice già registrata, non
+    la lettera/mountpoint, che può cambiare da un collegamento all'altro) da
+    quelli nuovi, e sottopone quello scelto a revisione (se conosciuto) o
+    ad acquisizione (se nuovo)."""
+    with FileDatabase(args.db) as db:
+        details = _remap_connected_roots(db)
+        roots_by_volume: dict[str, list[dict]] = {}
+        for entry in details:
+            if entry["volume_id"]:
+                roots_by_volume.setdefault(entry["volume_id"], []).append(entry)
+
+        connected = list_drives()
+        if not connected:
+            print("Nessun disco individuato.", file=sys.stderr)
+            return 1
+
+        statuses = []
+        for mountpoint in connected:
+            vol = volume_id.get_volume_id(Path(mountpoint))
+            known = roots_by_volume.get(vol) if vol else None
+            if known is None and vol is None:
+                # Identità non determinabile: ripiego sul confronto per
+                # percorso esatto, come prima di questa funzionalità.
+                exact = [d for d in details if path_key(d["path"]) == path_key(mountpoint)]
+                known = exact or None
+            statuses.append({"mountpoint": mountpoint, "volume_id": vol, "known": known})
+
+        print("Dischi collegati:")
+        for i, s in enumerate(statuses, start=1):
+            if s["known"]:
+                paths = ", ".join(e["path"] for e in s["known"])
+                stato = f"conosciuto ({paths})"
+            else:
+                stato = "nuovo"
+            vid = s["volume_id"] or "n/d"
+            print(f"  {i}. {s['mountpoint']}  [{stato}]  (id volume: {vid})")
+
+        if args.all:
+            chosen = statuses
+        elif args.drive:
+            chosen = [s for s in statuses if path_key(s["mountpoint"]) == path_key(args.drive)]
+            if not chosen:
+                print(f"Errore: '{args.drive}' non è tra i dischi collegati.", file=sys.stderr)
+                return 1
+        else:
+            try:
+                choice = input("\nNumero del disco da sottoporre (vuoto per annullare): ").strip()
+            except EOFError:
+                choice = ""
+            if not choice:
+                print("Operazione annullata.")
+                return 0
+            try:
+                chosen = [statuses[int(choice) - 1]]
+            except (ValueError, IndexError):
+                print("Scelta non valida.", file=sys.stderr)
+                return 1
+
+        for s in chosen:
+            if s["known"]:
+                roots = [Path(e["path"]) for e in s["known"]]
+                print(f"\n=== Revisione di {s['mountpoint']} (disco già conosciuto) ===")
+                _sync_once(db, roots, args.db, args.num_themes)
+            else:
+                root = Path(s["mountpoint"])
+                print(f"\n=== Acquisizione di {s['mountpoint']} (disco nuovo) ===")
+                count, _, _ = _index_roots(db, [root], args.db, verbose=False)
+                print(f"Indicizzati {count} file.")
+                all_records = db.all_files()
+                unclassified = [r for r in all_records if not r.theme]
+                if unclassified:
+                    results = classify_files(all_records, num_themes=args.num_themes)
+                    for result in results:
+                        db.set_theme(result.file_id, result.theme, result.keywords)
+                    print(f"Classificati {len(unclassified)} file.")
+    return 0
+
+
 def _print_result_details(row: dict) -> None:
     print(f"    tipo: {row.get('extension') or '(nessuna estensione)'}")
     print(f"    percorso: {row['current_path']}")
@@ -261,6 +433,7 @@ def _print_result_details(row: dict) -> None:
 
 def cmd_query(args: argparse.Namespace) -> int:
     with FileDatabase(args.db) as db:
+        _remap_connected_roots(db)
         results = db.search(args.terms, limit=args.limit)
         if not results:
             print("Nessun risultato.")
@@ -292,6 +465,7 @@ def cmd_keywords(args: argparse.Namespace) -> int:
 
 def cmd_find(args: argparse.Namespace) -> int:
     with FileDatabase(args.db) as db:
+        _remap_connected_roots(db)
         rows = db.find_by_keyword(args.keyword, limit=args.limit)
         if not rows:
             print("Nessun file trovato con questa parola chiave.")
@@ -311,6 +485,7 @@ def _open_or_reveal(path: Path, reveal: bool, program: str | None) -> None:
 
 def cmd_open(args: argparse.Namespace) -> int:
     with FileDatabase(args.db) as db:
+        _remap_connected_roots(db)
         record = db.get_file(args.file_id)
     if record is None:
         print(f"Errore: nessun file con id {args.file_id}.", file=sys.stderr)
@@ -336,6 +511,7 @@ def cmd_cerca(args: argparse.Namespace) -> int:
     file corrispondenti e permette di aprirne la cartella o il file (con un
     programma specifico, se richiesto)."""
     with FileDatabase(args.db) as db:
+        _remap_connected_roots(db)
         while True:
             try:
                 keyword = input("\nParola chiave (vuoto per uscire): ").strip()
@@ -457,6 +633,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_cerca = sub.add_parser("cerca", help="agente interattivo: cerca per parola chiave e apri il file/cartella trovato")
     p_cerca.add_argument("--limit", type=int, default=20)
     p_cerca.set_defaults(func=cmd_cerca)
+
+    p_agente = sub.add_parser(
+        "agente",
+        help="elenca i dischi collegati (conosciuti/nuovi, per identità di volume) e sottopone quello scelto a revisione o acquisizione",
+    )
+    p_agente.add_argument("--drive", default=None, help="lettera/punto di montaggio del disco da sottoporre (salta la scelta interattiva)")
+    p_agente.add_argument("--all", action="store_true", help="sottopone tutti i dischi collegati, ciascuno secondo il proprio stato")
+    p_agente.add_argument("--num-themes", type=int, default=None, help="numero di temi per la classificazione")
+    p_agente.set_defaults(func=cmd_agente)
 
     return parser
 

@@ -11,7 +11,12 @@ from pathlib import Path
 from .paths import path_key
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS scan_roots (path TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS scan_roots (
+    path TEXT PRIMARY KEY,
+    volume_id TEXT,
+    volume_root TEXT,
+    relative_path TEXT
+);
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT NOT NULL,
@@ -66,6 +71,16 @@ END;
 """
 
 
+def _rebase_path(path_str: str, old_root: Path, new_root: Path) -> str:
+    """Se path_str è old_root o un suo discendente, ricalcola il percorso
+    equivalente sotto new_root; altrimenti lo ritorna inalterato."""
+    try:
+        rel = Path(path_str).relative_to(old_root)
+    except ValueError:
+        return path_str
+    return path_key(new_root) if str(rel) == "." else path_key(new_root / rel)
+
+
 @dataclass
 class FileRecord:
     id: int
@@ -103,6 +118,13 @@ class FileDatabase:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(files)")}
         if "status" not in columns:
             self._conn.execute("ALTER TABLE files ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+
+        # Database creati prima del riconoscimento dei dischi per identità di
+        # volume (invece che per lettera di unità/punto di montaggio).
+        scan_roots_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(scan_roots)")}
+        for column in ("volume_id", "volume_root", "relative_path"):
+            if column not in scan_roots_columns:
+                self._conn.execute(f"ALTER TABLE scan_roots ADD COLUMN {column} TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -216,12 +238,65 @@ class FileDatabase:
             conn.execute("DELETE FROM file_keywords WHERE file_id = ?", (file_id,))
             conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
 
-    def add_scan_root(self, root):
+    def add_scan_root(self, root, volume_id: str | None = None, volume_root: str | None = None,
+                       relative_path: str | None = None) -> None:
+        """Registra una cartella/disco come radice di scansione. volume_id è
+        l'identità stabile del disco (non la lettera/mountpoint, che può
+        cambiare): se nota, permette a 'sync'/'agente' di ritrovare questa
+        radice anche se il disco è ricollegato con una lettera diversa."""
         with self.transaction() as conn:
-            conn.execute("INSERT OR IGNORE INTO scan_roots VALUES (?)", (path_key(root),))
+            conn.execute(
+                """
+                INSERT INTO scan_roots (path, volume_id, volume_root, relative_path)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    volume_id=excluded.volume_id,
+                    volume_root=excluded.volume_root,
+                    relative_path=excluded.relative_path
+                """,
+                (path_key(root), volume_id, path_key(volume_root) if volume_root else None, relative_path),
+            )
 
-    def scan_roots(self):
+    def scan_roots(self) -> list[str]:
         return [r[0] for r in self._conn.execute("SELECT path FROM scan_roots")]
+
+    def scan_roots_detail(self) -> list[dict]:
+        """Le radici di scansione registrate, con l'identità di volume nota
+        (se determinata al momento della registrazione)."""
+        rows = self._conn.execute(
+            "SELECT path, volume_id, volume_root, relative_path FROM scan_roots"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_scan_root_path(self, old_path: str, new_path: str, new_volume_root: str) -> None:
+        """Il disco è stato ritrovato con una lettera/mountpoint diversa:
+        aggiorna la radice registrata di conseguenza (i file vanno
+        aggiornati separatamente con remap_path_prefix)."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE scan_roots SET path = ?, volume_root = ? WHERE path = ?",
+                (path_key(new_path), path_key(new_volume_root), path_key(old_path)),
+            )
+
+    def remap_path_prefix(self, old_root: str, new_root: str) -> int:
+        """Riscrive original_path/current_path dei file che si trovano sotto
+        old_root, spostando il prefisso a new_root (es. un disco rimovibile
+        ricollegato con una lettera diversa). Ritorna il numero di file
+        aggiornati."""
+        old_root_p, new_root_p = Path(path_key(old_root)), Path(path_key(new_root))
+        updated = 0
+        with self.transaction() as conn:
+            rows = conn.execute("SELECT id, original_path, current_path FROM files").fetchall()
+            for row in rows:
+                new_original = _rebase_path(row["original_path"], old_root_p, new_root_p)
+                new_current = _rebase_path(row["current_path"], old_root_p, new_root_p)
+                if new_original != row["original_path"] or new_current != row["current_path"]:
+                    conn.execute(
+                        "UPDATE files SET original_path = ?, current_path = ? WHERE id = ?",
+                        (new_original, new_current, row["id"]),
+                    )
+                    updated += 1
+        return updated
 
     def all_files(self, only_with_content: bool = False) -> list[FileRecord]:
         query = "SELECT * FROM files"
