@@ -192,6 +192,43 @@ schtasks /create /tn "FileClassifierSync" /tr "C:\percorso\.venv312\Scripts\file
 0 * * * * /percorso/.venv/bin/file-classifier --db /percorso/archivio.db sync
 ```
 
+### Sapere che è in esecuzione (e non spegnere il PC per sbaglio)
+
+Mentre `sync` lavora, mostra a video una riga di avanzamento che si aggiorna
+in tempo reale (es. `in corso... file elaborati: 42`), così è sempre chiaro
+che l'operazione è ancora attiva e non va interrotta spegnendo il computer.
+
+Per una protezione più robusta, su **Windows** sono disponibili due opzioni:
+
+```bash
+# blocca lo spegnimento di Windows finché 'sync' non ha finito
+file-classifier --db archivio.db sync --block-shutdown
+
+# come sopra, e in più spegne il computer al termine (non si usa con --loop)
+file-classifier --db archivio.db sync --shutdown-when-done
+
+# con un ritardo diverso dai 30 secondi di default prima dello spegnimento
+file-classifier --db archivio.db sync --shutdown-when-done --shutdown-delay 60
+```
+
+Con `--block-shutdown` (incluso automaticamente in `--shutdown-when-done`),
+se durante l'esecuzione si prova a spegnere o riavviare Windows dal menu
+Start, Windows mostra la schermata "queste app stanno impedendo
+l'arresto" con il motivo indicato da file-classifier, invece di spegnersi
+subito; lo spegnimento riparte da solo non appena `sync` termina. Con
+`--shutdown-when-done`, il programma lo dichiara a video fin dall'inizio
+("il computer verrà spento automaticamente al termine") e, finita la
+sincronizzazione, spegne davvero il computer.
+
+**Importante**: è una misura di cortesia, non una garanzia assoluta — dalla
+stessa schermata di Windows l'utente può sempre scegliere "Arresta
+comunque" per forzare lo spegnimento, bypassando il blocco (succede con
+qualsiasi programma che usa questa funzione di Windows, non solo con
+file-classifier). Su Linux/macOS il blocco non è disponibile (manca
+un'API equivalente): `--block-shutdown` mostra solo un avviso, mentre
+`--shutdown-when-done` continua comunque a spegnere il computer al
+termine (su Linux; su macOS lo spegnimento automatico non è supportato).
+
 ## Lanciare sync e cerca con un'icona (barra delle applicazioni)
 
 Nella cartella `scripts/` ci sono degli script pronti per lanciare `sync` e
@@ -258,6 +295,7 @@ file_classifier/
   extractor.py   # estrazione del testo dai file (txt, pdf, docx, ...)
   drives.py      # individuazione dei dischi/unità presenti sul sistema
   trash.py       # individuazione dei file nel cestino (per 'sync')
+  shutdown_guard.py  # blocco/spegnimento di Windows per 'sync --block-shutdown'
   db.py          # schema SQLite + indice full-text (FTS5) + tabella parole chiave
   classifier.py  # classificazione per argomento (TF-IDF + KMeans)
   organizer.py   # pianificazione ed esecuzione della riorganizzazione

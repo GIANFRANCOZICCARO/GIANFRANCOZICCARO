@@ -6,6 +6,7 @@ import argparse
 import sys
 import json
 import time
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from .classifier import classify_files
 from .db import FileDatabase
 from .drives import list_drives
 from .extractor import extract_file, iter_files
-from . import opener
+from . import opener, shutdown_guard
 from .organizer import build_plan, execute_plan
 from .paths import path_key
 from .trash import find_in_trash, trash_candidate_dirs
@@ -21,15 +22,24 @@ from .trash import find_in_trash, trash_candidate_dirs
 DEFAULT_DB = "file_classifier.db"
 
 
-def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False) -> tuple[int, int, int]:
+def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False,
+                  show_progress: bool = True) -> tuple[int, int, int]:
     """Scansiona le radici indicate e aggiorna il database. Ritorna
     (file indicizzati, file saltati, file di cui si sono salvati solo i metadati)."""
     count = skipped = metadata = 0
+    progress_shown = False
 
     def progress(event, path=None):
         print(json.dumps(dict(event=event, indexed=count, skipped=skipped,
                               metadata_only=metadata, path=str(path) if path else None),
                          ensure_ascii=True), file=sys.stderr, flush=True)
+        # Avviso leggero su stdout: mostra che l'operazione è ancora attiva,
+        # utile soprattutto per sapere che non va interrotta (es. spegnendo il PC).
+        if show_progress and not verbose and event == "processing":
+            nonlocal progress_shown
+            progress_shown = True
+            sys.stdout.write(f"\r  in corso... file elaborati: {count}  ")
+            sys.stdout.flush()
 
     progress("start")
     excluded = {path_key(db_path + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
@@ -68,6 +78,9 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
                 print(f"  [{status}] {path}")
 
     progress("complete")
+    if progress_shown:
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        sys.stdout.flush()
     return count, skipped, metadata
 
 
@@ -164,10 +177,13 @@ def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: in
     missing = [r for r in db.all_files() if not Path(r.current_path).exists()]
     trashed = deleted = 0
     trash_dirs = None
-    for record in missing:
+    for i, record in enumerate(missing, start=1):
         if trash_dirs is None:
             trash_dirs = trash_candidate_dirs(roots)
+        sys.stdout.write(f"\r  controllo file non più presenti: {i}/{len(missing)}  ")
+        sys.stdout.flush()
         found = find_in_trash(record.content_hash, trash_dirs) if record.content_hash else None
+        sys.stdout.write("\r" + " " * 50 + "\r")
         if found:
             db.relocate_to_trash(record.id, str(found))
             trashed += 1
@@ -186,24 +202,54 @@ def cmd_sync(args: argparse.Namespace) -> int:
     nuovi, classifica quelli non ancora classificati, e distingue i file
     cestinati (restano classificati, cambia solo la posizione) da quelli
     cancellati fisicamente (rimossi dalla tabella)."""
+    if args.shutdown_when_done and args.loop:
+        print("Errore: --shutdown-when-done non è compatibile con --loop "
+              "(l'esecuzione in loop non termina mai da sola).", file=sys.stderr)
+        return 1
+
+    block_shutdown = args.block_shutdown or args.shutdown_when_done
+
     with FileDatabase(args.db) as db:
         roots = [Path(r) for r in db.scan_roots()]
         if not roots:
             print("Errore: nessuna cartella/disco registrato. Esegui prima 'index'.", file=sys.stderr)
             return 1
 
-        while True:
-            _sync_once(db, roots, args.db, args.num_themes)
-            if not args.loop:
-                return 0
-            next_run = datetime.now() + timedelta(hours=args.interval)
-            print(f"Prossima sincronizzazione alle {next_run.strftime('%H:%M:%S')} "
-                  f"(ogni {args.interval} ore). Premi Ctrl+C per interrompere.")
-            try:
-                time.sleep(args.interval * 3600)
-            except KeyboardInterrupt:
-                print("\nSincronizzazione periodica interrotta.")
-                return 0
+        guard = nullcontext()
+        if block_shutdown:
+            guard = shutdown_guard.ShutdownGuard(
+                "file-classifier sta sincronizzando l'archivio: attendere il termine prima di spegnere il PC."
+            )
+            if shutdown_guard.IS_WINDOWS:
+                print("In esecuzione: lo spegnimento di Windows resterà bloccato finché "
+                      "questa operazione non termina.")
+            else:
+                print("Avviso: il blocco dello spegnimento è disponibile solo su Windows; "
+                      "su questo sistema non ha effetto.")
+            if args.shutdown_when_done:
+                print("Il computer verrà spento automaticamente al termine di questa sincronizzazione.")
+
+        with guard:
+            while True:
+                _sync_once(db, roots, args.db, args.num_themes)
+                if not args.loop:
+                    break
+                next_run = datetime.now() + timedelta(hours=args.interval)
+                print(f"Prossima sincronizzazione alle {next_run.strftime('%H:%M:%S')} "
+                      f"(ogni {args.interval} ore). Premi Ctrl+C per interrompere.")
+                try:
+                    time.sleep(args.interval * 3600)
+                except KeyboardInterrupt:
+                    print("\nSincronizzazione periodica interrotta.")
+                    return 0
+
+            if args.shutdown_when_done:
+                print(f"Sincronizzazione completata: il computer si spegnerà tra "
+                      f"{args.shutdown_delay} secondi (Ctrl+C non lo ferma; usa 'shutdown /a' "
+                      f"su Windows o 'shutdown -c' su Linux per annullare).")
+                shutdown_guard.request_shutdown(delay_seconds=args.shutdown_delay)
+
+    return 0
 
 
 def _print_result_details(row: dict) -> None:
@@ -378,6 +424,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--num-themes", type=int, default=None, help="numero di temi per la classificazione dei nuovi file")
     p_sync.add_argument("--loop", action="store_true", help="resta in esecuzione e ripete la sincronizzazione periodicamente")
     p_sync.add_argument("--interval", type=float, default=1.0, help="intervallo in ore tra una sincronizzazione e la successiva (default: 1)")
+    p_sync.add_argument("--block-shutdown", action="store_true",
+                         help="blocca lo spegnimento di Windows mentre la sincronizzazione è in corso (nessun effetto su altri sistemi)")
+    p_sync.add_argument("--shutdown-when-done", action="store_true",
+                         help="al termine, spegne il computer (implica --block-shutdown; non utilizzabile con --loop)")
+    p_sync.add_argument("--shutdown-delay", type=int, default=30,
+                         help="secondi di attesa prima dello spegnimento effettivo con --shutdown-when-done (default: 30)")
     p_sync.set_defaults(func=cmd_sync)
 
     p_query = sub.add_parser("query", help="cerca nei contenuti indicizzati (full-text)")

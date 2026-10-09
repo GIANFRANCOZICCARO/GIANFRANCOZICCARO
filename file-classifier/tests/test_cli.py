@@ -306,3 +306,81 @@ def test_sync_loop_runs_once_then_stops_on_interrupt(tmp_path, monkeypatch, caps
     assert cli.main(["--db", str(db_path), "sync", "--loop", "--interval", "2"]) == 0
     assert sleep_calls == [2 * 3600]
     assert "interrotta" in capsys.readouterr().out.lower()
+
+
+def test_sync_shutdown_when_done_incompatible_with_loop(tmp_path, capsys):
+    db_path = tmp_path / "db.sqlite"
+    FileDatabase(db_path).close()
+
+    assert cli.main(["--db", str(db_path), "sync", "--loop", "--shutdown-when-done"]) == 1
+    assert "non è compatibile" in capsys.readouterr().err.lower()
+
+
+def test_sync_block_shutdown_wraps_run_in_guard(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+
+    from file_classifier import shutdown_guard
+    calls = []
+
+    class FakeGuard:
+        def __enter__(self):
+            calls.append("enter")
+            return self
+
+        def __exit__(self, *exc_info):
+            calls.append("exit")
+            return False
+
+    monkeypatch.setattr(shutdown_guard, "ShutdownGuard", lambda reason: FakeGuard())
+    monkeypatch.setattr(shutdown_guard, "IS_WINDOWS", True)
+
+    assert cli.main(["--db", str(db_path), "sync", "--block-shutdown"]) == 0
+    assert calls == ["enter", "exit"]
+    assert "bloccato" in capsys.readouterr().out.lower()
+
+
+def test_sync_shutdown_when_done_requests_shutdown_after_completion(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+
+    from file_classifier import shutdown_guard
+
+    class FakeGuard:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(shutdown_guard, "ShutdownGuard", lambda reason: FakeGuard())
+    monkeypatch.setattr(shutdown_guard, "IS_WINDOWS", True)
+    shutdown_calls = []
+    monkeypatch.setattr(shutdown_guard, "request_shutdown", lambda delay_seconds: shutdown_calls.append(delay_seconds))
+
+    assert cli.main(["--db", str(db_path), "sync", "--shutdown-when-done", "--shutdown-delay", "45"]) == 0
+    assert shutdown_calls == [45]
+    out = capsys.readouterr().out.lower()
+    assert "verrà spento automaticamente" in out
+    assert "si spegnerà tra 45 secondi" in out
+
+
+def test_sync_without_shutdown_flags_does_not_touch_guard_or_shutdown(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    source.mkdir()
+    db_path = tmp_path / "db.sqlite"
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+
+    from file_classifier import shutdown_guard
+
+    def fail(*args, **kwargs):
+        raise AssertionError("non doveva essere chiamato")
+
+    monkeypatch.setattr(shutdown_guard, "ShutdownGuard", fail)
+    monkeypatch.setattr(shutdown_guard, "request_shutdown", fail)
+
+    assert cli.main(["--db", str(db_path), "sync"]) == 0
