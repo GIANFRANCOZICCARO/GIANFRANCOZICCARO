@@ -286,46 +286,65 @@ un'API equivalente): `--block-shutdown` mostra solo un avviso, mentre
 `--shutdown-when-done` continua comunque a spegnere il computer al
 termine (su Linux; su macOS lo spegnimento automatico non è supportato).
 
-## Lanciare sync e cerca con un'icona (barra delle applicazioni)
+## Lanciare i comandi con un'icona (desktop/barra delle applicazioni)
 
-Nella cartella `scripts/` ci sono degli script pronti per lanciare `sync` e
-`cerca` con un doppio clic, senza aprire un terminale e digitare il comando
-ogni volta:
+Nella cartella `scripts/windows/` ci sono quattro script pronti per lanciare
+i comandi più usati con un doppio clic, senza aprire un terminale:
 
-- `scripts/windows/sync.bat` e `scripts/windows/cerca.bat` (Windows)
-- `scripts/unix/sync.sh` e `scripts/unix/cerca.sh` (Linux/macOS)
+| Script | Comando | A cosa serve |
+|---|---|---|
+| `cerca.bat` | `cerca` | agente interattivo: cerca per parola chiave e apre il file/cartella trovato |
+| `agente.bat` | `agente` | analizza i dischi collegati (nuovi/già conosciuti) e li sottopone ad acquisizione o revisione |
+| `query.bat` | `query` | chiede dei termini e cerca nel contenuto dei file (full-text) |
+| `sync.bat` | `sync` | controlla nuovi file, cestino e cancellazioni sulle cartelle già registrate |
 
-In testa a ciascuno script ci sono due righe da modificare una sola volta,
-con il percorso dell'ambiente virtuale e del database:
+(equivalenti per Linux/macOS in `scripts/unix/`: `cerca.sh`, `sync.sh`.)
+
+In testa a ciascuno script ci sono le righe da modificare una sola volta,
+con il percorso dell'ambiente virtuale e del database — di default puntano
+dentro la cartella del progetto stessa (come creati seguendo questo
+README); se li hai messi altrove, aggiorna questi percorsi:
 
 ```bat
 set VENV_PYTHON=%~dp0..\..\.venv312\Scripts\python.exe
 set FC_DB=%~dp0..\..\file_classifier.db
 ```
 
-Di default puntano all'ambiente virtuale e al database dentro la cartella
-del progetto (come creati seguendo questo README); se li hai messi altrove,
-aggiorna questi due percorsi.
+### Tre pulsanti sul desktop, creati in automatico
 
-**Per metterlo nella barra delle applicazioni di Windows** (es. `cerca.bat`,
-l'agente di ricerca, per averlo sempre a portata di clic):
+Lo script `scripts/windows/crea_collegamenti_desktop.ps1` crea da solo sul
+Desktop i collegamenti a `cerca.bat`, `agente.bat` e `query.bat` (le tre
+icone per cercare, analizzare i dischi e interrogare i contenuti).
+Va eseguito una sola volta, da PowerShell:
 
-1. Clic destro su `cerca.bat` → **Invia a → Desktop (crea collegamento)**
-   (crea un collegamento `.lnk`, necessario perché Windows non permette di
-   aggiungere un file `.bat` direttamente alla barra).
-2. Clic destro sul collegamento sul desktop → **Aggiungi a Start**
-   (se non compare "Aggiungi alla barra delle applicazioni" direttamente).
-3. Dal menu Start, clic destro sul riquadro appena creato → **Aggiungi alla
+```powershell
+cd "C:\...\file-classifier\scripts\windows"
+.\crea_collegamenti_desktop.ps1
+```
+
+Se PowerShell si lamenta dei permessi di esecuzione:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\crea_collegamenti_desktop.ps1
+```
+
+Compaiono tre icone sul Desktop: **Cerca file**, **Analizza dischi**,
+**Interroga contenuti**. Da lì, per metterne una anche sulla barra delle
+applicazioni:
+
+1. Clic destro sull'icona sul Desktop → **Aggiungi a Start** (se non
+   compare "Aggiungi alla barra delle applicazioni" direttamente).
+2. Dal menu Start, clic destro sul riquadro appena creato → **Aggiungi alla
    barra delle applicazioni** (oppure trascina il riquadro dal menu Start
    alla barra delle applicazioni).
 
-La stessa procedura vale per `sync.bat`, utile per avere un modo immediato
-di controllare nuovi file/cestino quando si vuole, senza aspettare il
-prossimo giro pianificato.
+(`sync.bat` non ha un'icona creata dallo script, perché normalmente gira da
+sola pianificata o in `--loop`; se la vuoi anche sul desktop, clic destro su
+`sync.bat` → **Invia a → Desktop (crea collegamento)**, stessa procedura.)
 
 Su Linux/macOS l'equivalente è creare un launcher (un file `.desktop` su
-Linux, un'app Automator o un collegamento nel Dock su macOS) che esegua
-`scripts/unix/cerca.sh` o `scripts/unix/sync.sh`.
+Linux, un'app Automator o un collegamento nel Dock su macOS) che esegua lo
+script `.sh` desiderato.
 
 ## Note di sicurezza
 
@@ -362,7 +381,8 @@ file_classifier/
                  # query, themes, keywords, find, open, cerca
 tests/           # test automatici per ciascun modulo
 scripts/
-  windows/       # sync.bat, cerca.bat (lancio con un'icona/barra delle applicazioni)
+  windows/       # cerca.bat, agente.bat, query.bat, sync.bat
+                 # + crea_collegamenti_desktop.ps1 (icone sul Desktop)
   unix/          # sync.sh, cerca.sh (equivalenti per Linux/macOS)
 ```
 
