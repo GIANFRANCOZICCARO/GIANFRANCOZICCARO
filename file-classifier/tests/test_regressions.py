@@ -125,7 +125,7 @@ def test_index_progress_and_database_exclusion(tmp_path, capsys):
     output = capsys.readouterr()
     events = [json.loads(line) for line in output.err.splitlines()]
     assert events[0]['event'] == 'start'
-    assert events[-1] == dict(event='complete', indexed=2, skipped=0, metadata_only=1, path=None)
+    assert events[-1] == dict(event='complete', indexed=2, skipped=0, metadata_only=1, unchanged=0, path=None)
     assert sum(e['event'] == 'processing' for e in events) == 2
     with FileDatabase(dbpath) as db:
         assert len(db.all_files()) == 2

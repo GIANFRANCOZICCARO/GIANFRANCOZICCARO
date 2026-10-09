@@ -340,6 +340,100 @@ def test_index_solo_immagini_skips_non_image_files(tmp_path):
         assert files[0].filename == "foto.png"
 
 
+def test_reindex_skips_unchanged_files(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nota.txt").write_text("appunti", encoding="utf-8")
+    db_path = tmp_path / "db.sqlite"
+
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        first_indexed_at = db.all_files()[0].indexed_at
+
+    capsys.readouterr()
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    out = capsys.readouterr().out
+    assert "1 invariati" in out
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.indexed_at == first_indexed_at
+
+
+def test_reindex_reprocesses_modified_files(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    target = source / "nota.txt"
+    target.write_text("appunti", encoding="utf-8")
+    db_path = tmp_path / "db.sqlite"
+
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        first_indexed_at = db.all_files()[0].indexed_at
+
+    target.write_text("appunti modificati, più lunghi di prima", encoding="utf-8")
+    capsys.readouterr()
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    out = capsys.readouterr().out
+    assert "0 invariati" in out
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.indexed_at != first_indexed_at
+        assert record.content == "appunti modificati, più lunghi di prima"
+
+
+def test_reindex_with_immagini_retries_previously_unanalyzed_image(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(source / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    # Prima indicizzazione senza --immagini: l'immagine resta non analizzata.
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.content is None
+        assert "tipo di file non supportato" in record.extraction_error
+        first_indexed_at = record.indexed_at
+
+    # Il file è invariato, ma ora si chiede l'analisi delle immagini: va
+    # ritentato, non saltato come "invariato".
+    capsys.readouterr()
+    assert cli.main(["--db", str(db_path), "index", str(source), "--immagini"]) == 0
+    out = capsys.readouterr().out
+    assert "0 invariati" in out
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.indexed_at != first_indexed_at
+        # Nessuna libreria di OCR/riconoscimento installata in questo
+        # ambiente: il messaggio di errore cambia comunque, a conferma che
+        # è stato davvero ritentato (non semplicemente saltato).
+        assert "immagini" in record.extraction_error
+
+
+def test_reindex_skips_unchanged_image_without_immagini_flag(tmp_path, capsys):
+    source = tmp_path / "source"
+    source.mkdir()
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(source / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    with FileDatabase(db_path) as db:
+        first_indexed_at = db.all_files()[0].indexed_at
+
+    capsys.readouterr()
+    assert cli.main(["--db", str(db_path), "index", str(source)]) == 0
+    out = capsys.readouterr().out
+    assert "1 invariati" in out
+
+    with FileDatabase(db_path) as db:
+        assert db.all_files()[0].indexed_at == first_indexed_at
+
+
 def test_sync_requires_registered_roots(tmp_path, capsys):
     db_path = tmp_path / "db.sqlite"
     FileDatabase(db_path).close()

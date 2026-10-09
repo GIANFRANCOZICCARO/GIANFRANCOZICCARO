@@ -13,7 +13,14 @@ servizi esterni.
    dischi/unità individuati sul sistema) ricorsivamente, estrae il testo dai
    file (txt, md, csv, json, sorgenti di codice, PDF, DOCX, ecc.) e salva
    nel database: nome file, percorso, dimensione, data di modifica, hash del
-   contenuto e testo estratto.
+   contenuto e testo estratto. **Rilanciandolo sullo stesso disco/cartella**,
+   i file già indicizzati e non cambiati (stessa data di modifica e
+   dimensione) vengono saltati invece di essere riletti e ri-analizzati da
+   capo: si cercano solo le differenze (file nuovi o modificati). Unica
+   eccezione: un'immagine non ancora analizzata nel contenuto (indicizzata
+   prima senza `--immagini`, o quando la libreria non era disponibile)
+   viene comunque ritentata se ora si chiede l'analisi delle immagini,
+   anche se il file non è cambiato.
 2. **`classify`** — analizza i contenuti indicizzati con **TF-IDF +
    clustering (KMeans)** e assegna a ogni file un **tema** e un insieme di
    **parole chiave** (ricavate dai termini più rilevanti del gruppo), senza
@@ -314,8 +321,11 @@ realmente il file manager o un programma): usano `explorer` su Windows,
 Il comando `sync` controlla le cartelle/dischi già registrati con `index`
 (anche con `--all-drives`) e si occupa di tre cose in un solo passaggio:
 
-1. **File nuovi**: li indicizza (come farebbe `index`) e, se ce ne sono,
-   classifica quelli ancora senza tema.
+1. **File nuovi (o modificati)**: li indicizza (come farebbe `index`) e, se
+   ce ne sono, classifica quelli ancora senza tema. I file già indicizzati e
+   invariati vengono saltati (vedi sopra): ogni `sync` successivo cerca solo
+   le differenze da quando è stato lanciato l'ultima volta, non riparte da
+   zero sull'intero disco.
 2. **File spostati nel cestino**: se un file indicizzato non si trova più al
    suo percorso, `sync` controlla il cestino del sistema (`$Recycle.Bin` su
    Windows, `~/.Trash` su macOS, `~/.local/share/Trash` e `.Trash-<uid>`

@@ -104,17 +104,42 @@ def _resolve_connected_roots(db: FileDatabase, announce_skipped: bool = True) ->
     return roots
 
 
+def _is_unchanged(path: Path, record, analyze_images: bool) -> bool:
+    """Vero se 'path' è lo stesso file già indicizzato in 'record' (stessa
+    data di modifica e dimensione): si può saltare la rilettura/analisi.
+    Eccezione: se si richiede l'analisi delle immagini ma quel file non è
+    ancora stato analizzato con successo (es. prima indicizzato senza
+    --immagini, o libreria non disponibile all'epoca), va comunque
+    ritentato, anche se invariato."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    if record.modified_at != datetime.fromtimestamp(stat.st_mtime).isoformat():
+        return False
+    if record.size_bytes != stat.st_size:
+        return False
+    if analyze_images and path.suffix.lower() in IMAGE_EXTENSIONS and record.content is None:
+        return False
+    return True
+
+
 def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False,
                   show_progress: bool = True, analyze_images: bool = False,
-                  only_images: bool = False) -> tuple[int, int, int]:
-    """Scansiona le radici indicate e aggiorna il database. Ritorna
-    (file indicizzati, file saltati, file di cui si sono salvati solo i metadati)."""
-    count = skipped = metadata = 0
+                  only_images: bool = False) -> tuple[int, int, int, int]:
+    """Scansiona le radici indicate e aggiorna il database, saltando i file
+    già indicizzati che non sono cambiati (stessa data di modifica e
+    dimensione) invece di rileggerli/ri-analizzarli da capo. Ritorna (file
+    indicizzati, file saltati per errore, file di cui si sono salvati solo
+    i metadati, file invariati non ritoccati)."""
+    count = skipped = metadata = unchanged = 0
     progress_shown = False
+    known = {path_key(r.original_path): r for r in db.all_files()}
 
     def progress(event, path=None):
         print(json.dumps(dict(event=event, indexed=count, skipped=skipped,
-                              metadata_only=metadata, path=str(path) if path else None),
+                              metadata_only=metadata, unchanged=unchanged,
+                              path=str(path) if path else None),
                          ensure_ascii=True), file=sys.stderr, flush=True)
         # Avviso leggero su stdout: mostra che l'operazione è ancora attiva,
         # utile soprattutto per sapere che non va interrotta (es. spegnendo il PC).
@@ -136,6 +161,12 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
                 continue
             if only_images and path.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
+
+            existing = known.get(path_key(path))
+            if existing is not None and _is_unchanged(path, existing, analyze_images):
+                unchanged += 1
+                continue
+
             progress("processing", path)
             try:
                 extracted = extract_file(path, analyze_images=analyze_images)
@@ -167,7 +198,7 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
     if progress_shown:
         sys.stdout.write("\r" + " " * 40 + "\r")
         sys.stdout.flush()
-    return count, skipped, metadata
+    return count, skipped, metadata, unchanged
 
 
 def cmd_index(args: argparse.Namespace) -> int:
@@ -187,12 +218,12 @@ def cmd_index(args: argparse.Namespace) -> int:
         roots = [root]
 
     with FileDatabase(args.db) as db:
-        count, _, _ = _index_roots(
+        count, _, _, unchanged = _index_roots(
             db, roots, args.db, verbose=args.verbose,
             analyze_images=(args.immagini or args.solo_immagini),
             only_images=args.solo_immagini,
         )
-        print(f"Indicizzati {count} file in '{args.db}'.")
+        print(f"Indicizzati {count} file in '{args.db}' ({unchanged} invariati, saltati).")
     return 0
 
 
@@ -255,8 +286,8 @@ def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: in
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] Sincronizzazione in corso su {len(roots)} cartella/e registrata/e...")
 
-    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False,
-                                    analyze_images=analyze_images, only_images=only_images)
+    new_count, _, _, unchanged_count = _index_roots(db, roots, db_path, verbose=False,
+                                                      analyze_images=analyze_images, only_images=only_images)
 
     unclassified = [r for r in db.all_files() if not r.theme]
     classified_count = 0
@@ -291,8 +322,8 @@ def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: in
             deleted += 1
             print(f"  [cancellato] {record.filename}")
 
-    print(f"  nuovi/aggiornati: {new_count}, classificati: {classified_count}, "
-          f"cestinati: {trashed}, cancellati: {deleted}")
+    print(f"  nuovi/aggiornati: {new_count}, invariati: {unchanged_count}, "
+          f"classificati: {classified_count}, cestinati: {trashed}, cancellati: {deleted}")
 
 
 def cmd_sync(args: argparse.Namespace) -> int:
@@ -451,9 +482,9 @@ def cmd_agente(args: argparse.Namespace) -> int:
             else:
                 root = Path(s["mountpoint"])
                 print(f"\n=== Acquisizione di {s['mountpoint']} (disco nuovo) ===")
-                count, _, _ = _index_roots(db, [root], args.db, verbose=False,
-                                            analyze_images=analyze_images, only_images=only_images)
-                print(f"Indicizzati {count} file.")
+                count, _, _, unchanged = _index_roots(db, [root], args.db, verbose=False,
+                                                        analyze_images=analyze_images, only_images=only_images)
+                print(f"Indicizzati {count} file ({unchanged} invariati, saltati).")
                 all_records = db.all_files()
                 unclassified = [r for r in all_records if not r.theme]
                 if unclassified:
