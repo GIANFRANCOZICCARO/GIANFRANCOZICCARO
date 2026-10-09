@@ -16,6 +16,12 @@ TEXT_EXTENSIONS = {
     ".go", ".rb", ".php", ".sh", ".sql", ".html", ".htm", ".xml", ".css", ".json",
 }
 
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tiff", ".tif"}
+
+# Caricati una sola volta (modelli pesanti): si popolano al primo utilizzo.
+_ocr_reader = None
+_image_classifier = None
+
 
 @dataclass
 class ExtractedFile:
@@ -80,7 +86,94 @@ def _read_docx_file(path: Path) -> str:
     return "\n".join(paragraph.text for paragraph in document.paragraphs)
 
 
-def extract_content(path: Path) -> tuple[str | None, str | None]:
+_IMMAGINI_HINT = "installare gli extra 'immagini' (pip install -e \".[immagini]\")"
+
+
+def _get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+
+        _ocr_reader = easyocr.Reader(["it", "en"], gpu=False, verbose=False)
+    return _ocr_reader
+
+
+def _get_image_classifier():
+    """Ritorna predict(path, top_k) -> list[str], le etichette più probabili
+    per il soggetto dell'immagine; carica il modello una sola volta."""
+    global _image_classifier
+    if _image_classifier is None:
+        from PIL import Image
+        import torch
+        from torchvision.models import ResNet18_Weights, resnet18
+
+        weights = ResNet18_Weights.DEFAULT
+        model = resnet18(weights=weights)
+        model.eval()
+        categories = weights.meta["categories"]
+        transform = weights.transforms()
+
+        def predict(path: Path, top_k: int = 3) -> list[str]:
+            with Image.open(path) as img:
+                tensor = transform(img.convert("RGB")).unsqueeze(0)
+            with torch.no_grad():
+                probabilities = torch.nn.functional.softmax(model(tensor)[0], dim=0)
+            top_indices = torch.topk(probabilities, k=min(top_k, len(categories))).indices.tolist()
+            return [categories[i] for i in top_indices]
+
+        _image_classifier = predict
+    return _image_classifier
+
+
+def _ocr_text(path: Path) -> str:
+    """Testo letto nell'immagine (OCR). Stringa vuota se non ce n'è/non è
+    leggibile; solleva RuntimeError solo se manca la libreria."""
+    try:
+        reader = _get_ocr_reader()
+    except ImportError as exc:
+        raise RuntimeError(f"supporto OCR non disponibile: {_IMMAGINI_HINT}") from exc
+
+    try:
+        results = reader.readtext(str(path), detail=0)
+    except Exception:
+        return ""
+    return " ".join(results)
+
+
+def _image_subject_labels(path: Path, top_k: int = 3) -> list[str]:
+    """Le top_k etichette più probabili per il soggetto dell'immagine
+    (classificazione visiva generica su ImageNet). Lista vuota se non
+    determinabile; solleva RuntimeError solo se manca la libreria."""
+    try:
+        predict = _get_image_classifier()
+    except ImportError as exc:
+        raise RuntimeError(f"supporto riconoscimento immagini non disponibile: {_IMMAGINI_HINT}") from exc
+
+    try:
+        return predict(path, top_k=top_k)
+    except Exception:
+        return []
+
+
+def _read_image_file(path: Path) -> str:
+    try:
+        from PIL import Image  # noqa: F401 - verifica solo che Pillow sia installato
+    except ImportError as exc:
+        raise RuntimeError(f"supporto immagini non disponibile: {_IMMAGINI_HINT}") from exc
+
+    parts = []
+    text = _ocr_text(path)
+    if text.strip():
+        parts.append(text)
+
+    labels = _image_subject_labels(path)
+    if labels:
+        parts.append("[soggetto: " + ", ".join(labels) + "]")
+
+    return "\n".join(parts)
+
+
+def extract_content(path: Path, analyze_images: bool = False) -> tuple[str | None, str | None]:
     """Ritorna (contenuto, errore). Uno dei due è sempre None."""
     ext = path.suffix.lower()
     try:
@@ -92,6 +185,8 @@ def extract_content(path: Path) -> tuple[str | None, str | None]:
             content = _read_pdf_file(path)
         elif ext == ".docx":
             content = _read_docx_file(path)
+        elif ext in IMAGE_EXTENSIONS and analyze_images:
+            content = _read_image_file(path)
         else:
             return None, f"tipo di file non supportato: {ext or '(nessuna estensione)'}"
     except Exception as exc:  # noqa: BLE001 - vogliamo comunque indicizzare i metadati
@@ -102,9 +197,9 @@ def extract_content(path: Path) -> tuple[str | None, str | None]:
     return content, None
 
 
-def extract_file(path: Path) -> ExtractedFile:
+def extract_file(path: Path, analyze_images: bool = False) -> ExtractedFile:
     stat = path.stat()
-    content, error = extract_content(path)
+    content, error = extract_content(path, analyze_images=analyze_images)
     return ExtractedFile(
         path=path,
         filename=path.name,

@@ -105,7 +105,7 @@ def _resolve_connected_roots(db: FileDatabase, announce_skipped: bool = True) ->
 
 
 def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False,
-                  show_progress: bool = True) -> tuple[int, int, int]:
+                  show_progress: bool = True, analyze_images: bool = False) -> tuple[int, int, int]:
     """Scansiona le radici indicate e aggiorna il database. Ritorna
     (file indicizzati, file saltati, file di cui si sono salvati solo i metadati)."""
     count = skipped = metadata = 0
@@ -135,7 +135,7 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
                 continue
             progress("processing", path)
             try:
-                extracted = extract_file(path)
+                extracted = extract_file(path, analyze_images=analyze_images)
             except OSError as exc:
                 skipped += 1
                 progress("skipped", path)
@@ -184,7 +184,7 @@ def cmd_index(args: argparse.Namespace) -> int:
         roots = [root]
 
     with FileDatabase(args.db) as db:
-        count, _, _ = _index_roots(db, roots, args.db, verbose=args.verbose)
+        count, _, _ = _index_roots(db, roots, args.db, verbose=args.verbose, analyze_images=args.immagini)
         print(f"Indicizzati {count} file in '{args.db}'.")
     return 0
 
@@ -243,11 +243,12 @@ def cmd_organize(args: argparse.Namespace) -> int:
     return 0
 
 
-def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: int | None) -> None:
+def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: int | None,
+                analyze_images: bool = False) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] Sincronizzazione in corso su {len(roots)} cartella/e registrata/e...")
 
-    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False)
+    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False, analyze_images=analyze_images)
 
     unclassified = [r for r in db.all_files() if not r.theme]
     classified_count = 0
@@ -327,7 +328,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                         return 1
                     print(msg + " Nuovo tentativo al prossimo giro.", file=sys.stderr)
                 else:
-                    _sync_once(db, roots, args.db, args.num_themes)
+                    _sync_once(db, roots, args.db, args.num_themes, analyze_images=args.immagini)
                 if not args.loop:
                     break
                 next_run = datetime.now() + timedelta(hours=args.interval)
@@ -418,11 +419,11 @@ def cmd_agente(args: argparse.Namespace) -> int:
             if s["known"]:
                 roots = [Path(e["path"]) for e in s["known"]]
                 print(f"\n=== Revisione di {s['mountpoint']} (disco già conosciuto) ===")
-                _sync_once(db, roots, args.db, args.num_themes)
+                _sync_once(db, roots, args.db, args.num_themes, analyze_images=args.immagini)
             else:
                 root = Path(s["mountpoint"])
                 print(f"\n=== Acquisizione di {s['mountpoint']} (disco nuovo) ===")
-                count, _, _ = _index_roots(db, [root], args.db, verbose=False)
+                count, _, _ = _index_roots(db, [root], args.db, verbose=False, analyze_images=args.immagini)
                 print(f"Indicizzati {count} file.")
                 all_records = db.all_files()
                 unclassified = [r for r in all_records if not r.theme]
@@ -637,6 +638,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="scansiona una cartella (o tutti i dischi) ed estrae i contenuti nel database")
     p_index.add_argument("directory", nargs="?", default=None, help="cartella da scansionare")
     p_index.add_argument("--all-drives", action="store_true", help="scansiona tutti i dischi/unità individuati sul sistema")
+    p_index.add_argument("--immagini", action="store_true",
+                          help="analizza anche il contenuto delle immagini (OCR + riconoscimento del soggetto); "
+                               "richiede 'pip install -e \".[immagini]\"', rallenta molto l'indicizzazione")
     p_index.add_argument("-v", "--verbose", action="store_true")
     p_index.set_defaults(func=cmd_index)
 
@@ -663,6 +667,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="al termine, spegne il computer (implica --block-shutdown; non utilizzabile con --loop)")
     p_sync.add_argument("--shutdown-delay", type=int, default=30,
                          help="secondi di attesa prima dello spegnimento effettivo con --shutdown-when-done (default: 30)")
+    p_sync.add_argument("--immagini", action="store_true",
+                         help="analizza anche il contenuto delle immagini nuove (OCR + riconoscimento del soggetto); "
+                              "richiede 'pip install -e \".[immagini]\"', rallenta molto la sincronizzazione")
     p_sync.set_defaults(func=cmd_sync)
 
     p_query = sub.add_parser("query", help="cerca nei contenuti indicizzati (full-text)")
@@ -698,6 +705,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_agente.add_argument("--drive", default=None, help="lettera/punto di montaggio del disco da sottoporre (salta la scelta interattiva)")
     p_agente.add_argument("--all", action="store_true", help="sottopone tutti i dischi collegati, ciascuno secondo il proprio stato")
     p_agente.add_argument("--num-themes", type=int, default=None, help="numero di temi per la classificazione")
+    p_agente.add_argument("--immagini", action="store_true",
+                           help="analizza anche il contenuto delle immagini (OCR + riconoscimento del soggetto); "
+                                "richiede 'pip install -e \".[immagini]\"', rallenta molto l'operazione")
     p_agente.set_defaults(func=cmd_agente)
 
     return parser

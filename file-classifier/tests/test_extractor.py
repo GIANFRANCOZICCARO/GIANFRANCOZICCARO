@@ -1,6 +1,14 @@
+import sys
 from pathlib import Path
 
+from file_classifier import extractor
 from file_classifier.extractor import extract_content, extract_file, iter_files
+
+
+def _make_png(path: Path) -> None:
+    from PIL import Image
+
+    Image.new("RGB", (4, 4), color=(255, 0, 0)).save(path)
 
 
 def test_extract_text_file(tmp_path: Path):
@@ -46,3 +54,139 @@ def test_windows_line_endings_are_normalized(tmp_path):
     content, error = extract_content(f)
     assert content == "prima\nseconda\nterza\n"
     assert error is None
+
+
+def test_image_without_analyze_images_is_unsupported(tmp_path):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+    content, error = extract_content(f)
+    assert content is None
+    assert "non supportato" in error
+
+
+def test_image_combines_ocr_and_subject_labels(tmp_path, monkeypatch):
+    f = tmp_path / "foto.jpg"
+    _make_png(f)
+
+    class FakeReader:
+        def readtext(self, path, detail=0):
+            return ["fattura", "numero", "123"]
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FakeReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", lambda: lambda path, top_k=3: ["cane", "gatto"])
+
+    content, error = extract_content(f, analyze_images=True)
+    assert error is None
+    assert "fattura numero 123" in content
+    assert "[soggetto: cane, gatto]" in content
+
+
+def test_image_ocr_only_when_no_labels(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    class FakeReader:
+        def readtext(self, path, detail=0):
+            return ["testo trovato"]
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FakeReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", lambda: lambda path, top_k=3: [])
+
+    content, error = extract_content(f, analyze_images=True)
+    assert error is None
+    assert content == "testo trovato"
+
+
+def test_image_labels_only_when_no_ocr_text(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    class FakeReader:
+        def readtext(self, path, detail=0):
+            return []
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FakeReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", lambda: lambda path, top_k=3: ["montagna"])
+
+    content, error = extract_content(f, analyze_images=True)
+    assert error is None
+    assert content == "[soggetto: montagna]"
+
+
+def test_image_ocr_runtime_error_is_non_fatal(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    class FailingReader:
+        def readtext(self, path, detail=0):
+            raise RuntimeError("immagine corrotta")
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FailingReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", lambda: lambda path, top_k=3: ["montagna"])
+
+    content, error = extract_content(f, analyze_images=True)
+    assert error is None
+    assert content == "[soggetto: montagna]"
+
+
+def test_image_classifier_runtime_error_is_non_fatal(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    class FakeReader:
+        def readtext(self, path, detail=0):
+            return ["testo"]
+
+    def failing_predict(path, top_k=3):
+        raise RuntimeError("modello non disponibile")
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FakeReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", lambda: failing_predict)
+
+    content, error = extract_content(f, analyze_images=True)
+    assert error is None
+    assert content == "testo"
+
+
+def test_image_missing_ocr_library_surfaces_friendly_error(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    def missing_ocr():
+        raise ImportError("no module named easyocr")
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", missing_ocr)
+
+    content, error = extract_content(f, analyze_images=True)
+    assert content is None
+    assert "immagini" in error
+
+
+def test_image_missing_classifier_library_surfaces_friendly_error(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    class FakeReader:
+        def readtext(self, path, detail=0):
+            return []
+
+    def missing_classifier():
+        raise ImportError("no module named torchvision")
+
+    monkeypatch.setattr(extractor, "_get_ocr_reader", lambda: FakeReader())
+    monkeypatch.setattr(extractor, "_get_image_classifier", missing_classifier)
+
+    content, error = extract_content(f, analyze_images=True)
+    assert content is None
+    assert "immagini" in error
+
+
+def test_image_missing_pillow_surfaces_friendly_error(tmp_path, monkeypatch):
+    f = tmp_path / "foto.png"
+    _make_png(f)
+
+    monkeypatch.setitem(sys.modules, "PIL", None)
+
+    content, error = extract_content(f, analyze_images=True)
+    assert content is None
+    assert "immagini" in error

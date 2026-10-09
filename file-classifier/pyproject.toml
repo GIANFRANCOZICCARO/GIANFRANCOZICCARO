@@ -15,6 +15,18 @@ dependencies = [
     "psutil>=5.9",
 ]
 
+# Opzionali: analisi del contenuto delle immagini (OCR + riconoscimento
+# visivo del soggetto). Pesanti (centinaia di MB, modelli scaricati al
+# primo uso) e non necessari per il funzionamento di base: si installano
+# solo con 'pip install -e ".[immagini]"'.
+[project.optional-dependencies]
+immagini = [
+    "pillow>=10.0",
+    "easyocr>=1.7",
+    "torch>=2.0",
+    "torchvision>=0.15",
+]
+
 [project.scripts]
 file-classifier = "file_classifier.cli:main"
 

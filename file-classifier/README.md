@@ -23,12 +23,12 @@ servizi esterni.
    dedicata (`file_keywords`), così da poterle interrogare singolarmente.
 
    **Limiti dell'estrazione del contenuto**: solo i tipi di file elencati
-   sopra (testo semplice, PDF, DOCX) vengono letti davvero. Le **immagini**
-   (JPG, PNG, ecc.) non vengono analizzate nel contenuto — nessun OCR, nessun
-   riconoscimento visivo — e finiscono classificate solo in base al nome
-   del file. Lo stesso vale per i **file compilati** (`.exe`, `.dll`,
-   `.pyc`, ecc.): non essendo testo, non vengono letti, solo indicizzati
-   per nome.
+   sopra (testo semplice, PDF, DOCX) vengono letti per default. Le
+   **immagini** (JPG, PNG, ecc.) sono classificate solo in base al nome del
+   file, a meno di attivare l'analisi opzionale del contenuto (OCR +
+   riconoscimento del soggetto — vedi la sezione dedicata più sotto). I
+   **file compilati** (`.exe`, `.dll`, `.pyc`, ecc.) non vengono letti in
+   nessun caso, non essendo testo: restano sempre indicizzati solo per nome.
 3. **`organize`** — genera un piano per copiare (o spostare) i file in
    cartelle `<destinazione>/<tema>/nomefile`. Di default è una simulazione
    (**dry-run**): stampa le operazioni senza toccare i file finché non si
@@ -64,6 +64,13 @@ pip install -e .
 Dipendenze: `scikit-learn`, `numpy` (classificazione), `pypdf` (PDF),
 `python-docx` (DOCX), `psutil` (individuazione dei dischi). I tipi di testo
 semplice (txt, md, csv, codice, ecc.) non richiedono librerie aggiuntive.
+
+Per analizzare anche il **contenuto delle immagini** (opzionale, pesante —
+vedi la sezione dedicata più sotto):
+
+```bash
+pip install -e ".[immagini]"
+```
 
 ## Uso
 
@@ -109,6 +116,42 @@ file-classifier --db archivio.db index --all-drives
 I filesystem virtuali o di sistema (proc, tmpfs, cgroup, ecc.) vengono
 esclusi automaticamente: restano solo i dischi/unità su cui l'utente può
 avere documenti.
+
+## Analizzare anche il contenuto delle immagini (opzionale)
+
+Per default le immagini vengono classificate solo dal nome del file (vedi
+sopra). Con l'estra `immagini` installato (`pip install -e ".[immagini]"`)
+e il flag `--immagini` su `index`, `sync` o `agente`, il contenuto delle
+immagini viene analizzato in due modi, combinati insieme come "contenuto"
+del file (quindi usati anche per temi e parole chiave, come per gli altri
+file):
+
+- **OCR**: il testo eventualmente scritto nell'immagine (scansioni, foto
+  di documenti, screenshot) viene letto e trattato come testo normale.
+- **Riconoscimento del soggetto**: un modello generico (addestrato su
+  ImageNet) indovina 2-3 etichette per quello che si vede nella foto (es.
+  "cane", "spiaggia", "fattura"), anche senza testo scritto. Sono etichette
+  generiche in inglese, non una descrizione accurata: utili per
+  raggruppare, non per un catalogo fotografico dettagliato.
+
+```bash
+file-classifier --db archivio.db index /percorso/foto --immagini
+file-classifier --db archivio.db sync --immagini
+file-classifier --db archivio.db agente --immagini
+```
+
+**Avvertenze importanti**:
+- **Molto più lento**: OCR e riconoscimento visivo girano su ogni singola
+  immagine (anche qualche secondo ciascuna, su CPU); indicizzare una
+  cartella con migliaia di foto con `--immagini` può richiedere ore. Senza
+  questo flag, le immagini vengono comunque indicizzate (solo per nome),
+  velocemente come tutto il resto.
+- **Download al primo utilizzo**: i modelli (qualche centinaio di MB in
+  totale) vengono scaricati automaticamente alla prima immagine analizzata
+  e restano poi in cache; serve una connessione internet la prima volta.
+- Se l'estra non è installato, `--immagini` non blocca l'indicizzazione:
+  le immagini restano semplicemente classificate per nome, con un avviso
+  (non un errore bloccante) salvato per ciascuna.
 
 ## Scegliere quale disco sottoporre: `agente`
 
@@ -424,7 +467,7 @@ pytest
 
 ```
 file_classifier/
-  extractor.py   # estrazione del testo dai file (txt, pdf, docx, ...)
+  extractor.py   # estrazione del testo dai file (txt, pdf, docx, immagini opzionali, ...)
   drives.py      # individuazione dei dischi/unità presenti sul sistema
   volume_id.py   # identità stabile di un disco (seriale/UUID), non la lettera
   trash.py       # individuazione dei file nel cestino (per 'sync')
