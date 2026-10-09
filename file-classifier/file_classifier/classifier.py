@@ -75,7 +75,12 @@ def classify_files(
         token_pattern=r"(?u)\b[a-zA-Zàèéìòù][a-zA-Zàèéìòù0-9_]{2,}\b",
         sublinear_tf=True,
     )
-    matrix = vectorizer.fit_transform(documents)
+    try:
+        matrix = vectorizer.fit_transform(documents)
+    except ValueError as exc:
+        if "empty vocabulary" not in str(exc):
+            raise
+        return [ClassificationResult(file_id=r.id, theme="generico", keywords=[]) for r in usable]
     vocab = vectorizer.get_feature_names_out()
 
     if matrix.shape[1] == 0:

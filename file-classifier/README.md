@@ -100,3 +100,47 @@ file_classifier/
   cli.py         # comandi: index, classify, organize, query, themes
 tests/           # test automatici per ciascun modulo
 ```
+
+## Percorsi e progresso
+
+Su Windows, installare nell'ambiente virtuale con `py -m venv .venv`,
+attivarlo con `.venv\Scripts\Activate.ps1`, poi usare `python -m pip install -e . pytest`.
+Esempio: `file-classifier --db C:\Archivio\indice.db index D:\Documenti`.
+
+`index` scrive eventi JSON Lines su stderr: `start`, `processing`, `indexed`,
+`skipped`, `complete`, con percorso e contatori `indexed`, `skipped`,
+`metadata_only`. Il numero totale non è noto durante la scansione.
+Il database attivo e i suoi file SQLite ausiliari sono esclusi dall'indice.
+
+La destinazione deve essere esterna alle origini registrate da `index`.
+Per vecchi database privi delle radici di scansione, il controllo usa le
+cartelle dei file originali: reindicizzare prima dell'organizzazione per
+registrare la radice completa. I file già nella destinazione vengono saltati.
+Le collisioni presenti durante la pianificazione ricevono suffissi numerici;
+una collisione successiva interrompe l'esecuzione senza sovrascrivere il file.
+
+Dopo `copy` e `move`, `original_path` conserva la provenienza e `current_path`
+indica la destinazione; la copia lascia anche l'originale sul disco.
+La reindicizzazione dell'originale ancora presente o della destinazione aggiorna
+lo stesso record senza perdere il percorso organizzato.
+Il piano non è una transazione globale: un errore può lasciare già completate
+le operazioni precedenti. Non modificare contemporaneamente origini e destinazioni.
+
+## Configurazione verificata su Windows
+
+Verifica eseguita dall'utente il 9 ottobre 2026: Windows, Python 3.12.10,
+scikit-learn 1.8.0, **33 test passati**. Con scikit-learn 1.9.1,
+Smart App Control bloccava `sparsefuncs_fast` sia su Python 3.14 sia su 3.12.
+La versione 1.8.0 ha funzionato senza modificare le protezioni di Windows;
+le dipendenze del progetto la fissano per riprodurre questa configurazione.
+Non è una garanzia di accettazione su ogni sistema Windows.
+
+Da PowerShell, nella cartella del progetto:
+
+```powershell
+py install 3.12
+py -3.12 -m venv .venv312
+.\.venv312\Scripts\python.exe -m pip install -e . pytest
+.\.venv312\Scripts\python.exe -m pytest -v tests
+.\.venv312\Scripts\python.exe -m file_classifier --help
+```

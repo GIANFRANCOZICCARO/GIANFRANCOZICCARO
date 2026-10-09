@@ -39,7 +39,7 @@ def _sha256_of_file(path: Path) -> str:
 
 def _read_text_file(path: Path) -> str:
     raw = path.read_bytes()
-    return raw.decode("utf-8", errors="replace")
+    return raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _read_json_file(path: Path) -> str:

@@ -38,3 +38,11 @@ def test_iter_files_skips_hidden(tmp_path: Path):
     found = list(iter_files(tmp_path))
     assert len(found) == 1
     assert found[0].name == "visible.txt"
+
+
+def test_windows_line_endings_are_normalized(tmp_path):
+    f = tmp_path / "windows.txt"
+    f.write_bytes(b"prima\r\nseconda\rterza\n")
+    content, error = extract_content(f)
+    assert content == "prima\nseconda\nterza\n"
+    assert error is None

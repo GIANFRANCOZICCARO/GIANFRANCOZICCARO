@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from file_classifier.db import FileDatabase
+from file_classifier.paths import path_key
 from file_classifier.organizer import build_plan, execute_plan
 
 
@@ -64,7 +65,7 @@ def test_move_updates_current_path_in_db(tmp_path: Path):
 
         for item in executed:
             record = db.get_file(item.file_id)
-            assert record.current_path == str(item.destination)
+            assert path_key(record.current_path) == path_key(item.destination)
 
 
 def test_dedupe_on_name_collision(tmp_path: Path):

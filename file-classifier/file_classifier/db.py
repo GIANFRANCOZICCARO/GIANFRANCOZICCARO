@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .paths import path_key
+
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS scan_roots (path TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT NOT NULL,
@@ -115,9 +118,18 @@ class FileDatabase:
         content: str | None,
         extraction_error: str | None,
     ) -> int:
+        original_path, current_path = path_key(original_path), path_key(current_path)
+        # Match both provenance and the currently organized location, including
+        # legacy rows written before path normalization was introduced.
+        existing = next((r for r in self.all_files()
+                         if original_path in (path_key(r.original_path), path_key(r.current_path))), None)
+        if existing:
+            original_path = existing.original_path
+            if path_key(current_path) == path_key(existing.original_path) and Path(existing.current_path).exists():
+                current_path = existing.current_path
         now = datetime.now(timezone.utc).isoformat()
         with self.transaction() as conn:
-            cur = conn.execute(
+            conn.execute(
                 """
                 INSERT INTO files (
                     filename, original_path, current_path, extension, size_bytes,
@@ -139,8 +151,6 @@ class FileDatabase:
                     modified_at, content_hash, content, extraction_error, now,
                 ),
             )
-            if cur.lastrowid:
-                return cur.lastrowid
             row = conn.execute(
                 "SELECT id FROM files WHERE original_path = ?", (original_path,)
             ).fetchone()
@@ -158,8 +168,15 @@ class FileDatabase:
         with self.transaction() as conn:
             conn.execute(
                 "UPDATE files SET current_path = ?, organized_at = ? WHERE id = ?",
-                (new_path, now, file_id),
+                (path_key(new_path), now, file_id),
             )
+
+    def add_scan_root(self, root):
+        with self.transaction() as conn:
+            conn.execute("INSERT OR IGNORE INTO scan_roots VALUES (?)", (path_key(root),))
+
+    def scan_roots(self):
+        return [r[0] for r in self._conn.execute("SELECT path FROM scan_roots")]
 
     def all_files(self, only_with_content: bool = False) -> list[FileRecord]:
         query = "SELECT * FROM files"

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import json
 from pathlib import Path
 
 from .classifier import classify_files
 from .db import FileDatabase
 from .extractor import extract_file, iter_files
 from .organizer import build_plan, execute_plan
+from .paths import path_key
 
 DEFAULT_DB = "file_classifier.db"
 
@@ -21,11 +23,23 @@ def cmd_index(args: argparse.Namespace) -> int:
         return 1
 
     with FileDatabase(args.db) as db:
-        count = 0
+        db.add_scan_root(root)
+        count = skipped = metadata = 0
+        def progress(event, path=None):
+            print(json.dumps(dict(event=event, indexed=count, skipped=skipped,
+                                  metadata_only=metadata, path=str(path) if path else None),
+                             ensure_ascii=True), file=sys.stderr, flush=True)
+        progress("start")
+        excluded = {path_key(args.db + suffix) for suffix in ("", "-wal", "-shm", "-journal")}
         for path in iter_files(root):
+            if path_key(path) in excluded:
+                continue
+            progress("processing", path)
             try:
                 extracted = extract_file(path)
             except OSError as exc:
+                skipped += 1
+                progress("skipped", path)
                 print(f"  [salto] {path}: {exc}", file=sys.stderr)
                 continue
 
@@ -41,10 +55,13 @@ def cmd_index(args: argparse.Namespace) -> int:
                 extraction_error=extracted.extraction_error,
             )
             count += 1
+            metadata += extracted.content is None
+            progress("indexed", path)
             status = "ok" if extracted.content is not None else f"solo metadati ({extracted.extraction_error})"
             if args.verbose:
                 print(f"  [{status}] {path}")
 
+        progress("complete")
         print(f"Indicizzati {count} file in '{args.db}'.")
     return 0
 
@@ -150,7 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (OSError, ValueError) as exc:
+        print(f"Errore: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
