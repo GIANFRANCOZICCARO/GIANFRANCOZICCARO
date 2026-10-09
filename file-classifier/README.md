@@ -140,6 +140,23 @@ file-classifier --db archivio.db sync --immagini
 file-classifier --db archivio.db agente --immagini
 ```
 
+C'è anche un terzo modo, `--solo-immagini`: analizza **solo** i file
+immagine (con OCR e riconoscimento del soggetto), saltando completamente
+tutti gli altri tipi di file — utile per passare in rassegna le foto di un
+disco senza toccare/rileggere il resto:
+
+```bash
+file-classifier --db archivio.db index /percorso/foto --solo-immagini
+```
+
+Con `agente`, se non si specifica né `--immagini` né `--solo-immagini`
+sulla riga di comando, dopo aver scelto il disco (o 'tutti') viene chiesto
+interattivamente come procedere:
+
+```
+Come trattare le immagini? [n] normale, solo per nome (default) - [c] normale + immagini (OCR e soggetto, più lento) - [s] solo immagini (analizza solo i file immagine, salta il resto):
+```
+
 **Avvertenze importanti**:
 - **Molto più lento**: OCR e riconoscimento visivo girano su ogni singola
   immagine (anche qualche secondo ciascuna, su CPU); indicizzare una
@@ -210,14 +227,20 @@ per percorso esatto).
 ## Cercare per parola chiave e aprire il file trovato
 
 Dopo `classify`, ogni parola chiave individuata è salvata in una tabella
-dedicata e interrogabile:
+dedicata e interrogabile. **Anche il tipo di file (l'estensione) conta come
+parola chiave** — cercare `pdf` trova tutti i PDF, indipendentemente dal
+tema o dal contenuto, e compare anche nell'elenco di `keywords`:
 
 ```bash
 # tabella delle parole chiave individuate, con il numero di file per ciascuna
+# (compaiono anche i tipi di file, es. "pdf: 12 file", "txt: 40 file")
 file-classifier --db archivio.db keywords
 
 # cerca i file associati a una parola chiave (anche parziale)
 file-classifier --db archivio.db find fattura
+
+# il tipo di file funziona come qualunque altra parola chiave
+file-classifier --db archivio.db find pdf
 ```
 
 Per ogni file trovato, `find` (e anche `query`) mostrano: le parole chiave
@@ -277,6 +300,10 @@ da sinistra a destra:
 
 Si può lasciare vuoto l'operatore in qualsiasi momento (anche dopo la
 prima parola chiave) per cercare subito con quello che si è inserito finora.
+
+Visto che il tipo di file è anch'esso una parola chiave, si può combinare
+nella stessa ricerca: ad esempio `fattura AND pdf` trova solo le fatture
+che sono anche file PDF.
 
 Questi comandi vanno eseguiti sul computer dove si trovano i file (aprono
 realmente il file manager o un programma): usano `explorer` su Windows,

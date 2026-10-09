@@ -100,6 +100,7 @@ def test_keywords_summary_and_find_by_keyword(tmp_path: Path):
         db.set_theme(f3, "ricetta-torta", ["ricetta", "torta"])
 
         assert db.keywords_summary() == [
+            {"keyword": "txt", "n_files": 3},
             {"keyword": "fattura", "n_files": 2},
             {"keyword": "iva", "n_files": 2},
             {"keyword": "ricetta", "n_files": 1},
@@ -108,6 +109,10 @@ def test_keywords_summary_and_find_by_keyword(tmp_path: Path):
 
         matches = db.find_by_keyword("fattura")
         assert {m["filename"] for m in matches} == {"fattura_gennaio.txt", "fattura_febbraio.txt"}
+
+        # Il tipo di file è cercabile come parola chiave.
+        matches = db.find_by_keyword("txt")
+        assert {m["filename"] for m in matches} == {"fattura_gennaio.txt", "fattura_febbraio.txt", "ricetta.txt"}
 
         assert db.find_by_keyword("iva") != []
         assert db.find_by_keyword("inesistente") == []
@@ -125,7 +130,10 @@ def test_set_theme_is_idempotent_on_reclassification(tmp_path: Path):
 
         assert db.find_by_keyword("vecchio") == []
         assert len(db.find_by_keyword("nuovo")) == 1
-        assert db.keywords_summary() == [{"keyword": "nuovo", "n_files": 1}]
+        assert db.keywords_summary() == [
+            {"keyword": "nuovo", "n_files": 1},
+            {"keyword": "txt", "n_files": 1},
+        ]
 
 
 def test_new_file_is_active_by_default(tmp_path: Path):
@@ -368,6 +376,15 @@ def test_find_by_keyword_query_chain_of_four(tmp_path: Path):
             [("", "fattura"), ("AND", "iva"), ("NOT", "bozza"), ("OR", "torta")]
         )
         assert {r["filename"] for r in rows} == {"fattura_gennaio.txt", "ricetta_torta.txt"}
+
+
+def test_find_by_keyword_query_matches_file_type(tmp_path: Path):
+    with _make_db(tmp_path) as db:
+        _seed_keyword_files(db)
+        rows = db.find_by_keyword_query([("", "fattura"), ("AND", "txt")])
+        assert {r["filename"] for r in rows} == {
+            "fattura_gennaio.txt", "fattura_febbraio.txt", "fattura_marzo.txt",
+        }
 
 
 def test_find_by_keyword_query_empty_terms():

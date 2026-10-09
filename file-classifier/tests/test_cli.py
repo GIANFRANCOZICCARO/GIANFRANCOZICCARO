@@ -325,6 +325,21 @@ def test_index_requires_directory_or_all_drives(capsys):
     assert "specificare una cartella" in capsys.readouterr().err
 
 
+def test_index_solo_immagini_skips_non_image_files(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nota.txt").write_text("appunti", encoding="utf-8")
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(source / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    assert cli.main(["--db", str(db_path), "index", str(source), "--solo-immagini"]) == 0
+    with FileDatabase(db_path) as db:
+        files = db.all_files()
+        assert len(files) == 1
+        assert files[0].filename == "foto.png"
+
+
 def test_sync_requires_registered_roots(tmp_path, capsys):
     db_path = tmp_path / "db.sqlite"
     FileDatabase(db_path).close()

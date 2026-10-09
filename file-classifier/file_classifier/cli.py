@@ -13,7 +13,7 @@ from pathlib import Path
 from .classifier import classify_files
 from .db import FileDatabase
 from .drives import list_drives
-from .extractor import extract_file, iter_files
+from .extractor import IMAGE_EXTENSIONS, extract_file, iter_files
 from . import opener, shutdown_guard, volume_id
 from .organizer import build_plan, execute_plan
 from .paths import path_key, within
@@ -105,7 +105,8 @@ def _resolve_connected_roots(db: FileDatabase, announce_skipped: bool = True) ->
 
 
 def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: bool = False,
-                  show_progress: bool = True, analyze_images: bool = False) -> tuple[int, int, int]:
+                  show_progress: bool = True, analyze_images: bool = False,
+                  only_images: bool = False) -> tuple[int, int, int]:
     """Scansiona le radici indicate e aggiorna il database. Ritorna
     (file indicizzati, file saltati, file di cui si sono salvati solo i metadati)."""
     count = skipped = metadata = 0
@@ -132,6 +133,8 @@ def _index_roots(db: FileDatabase, roots: list[Path], db_path: str, verbose: boo
         db.add_scan_root(root, volume_id=vol_id, volume_root=vol_root, relative_path=relative_path)
         for path in iter_files(root):
             if path_key(path) in excluded:
+                continue
+            if only_images and path.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
             progress("processing", path)
             try:
@@ -184,7 +187,11 @@ def cmd_index(args: argparse.Namespace) -> int:
         roots = [root]
 
     with FileDatabase(args.db) as db:
-        count, _, _ = _index_roots(db, roots, args.db, verbose=args.verbose, analyze_images=args.immagini)
+        count, _, _ = _index_roots(
+            db, roots, args.db, verbose=args.verbose,
+            analyze_images=(args.immagini or args.solo_immagini),
+            only_images=args.solo_immagini,
+        )
         print(f"Indicizzati {count} file in '{args.db}'.")
     return 0
 
@@ -244,11 +251,12 @@ def cmd_organize(args: argparse.Namespace) -> int:
 
 
 def _sync_once(db: FileDatabase, roots: list[Path], db_path: str, num_themes: int | None,
-                analyze_images: bool = False) -> None:
+                analyze_images: bool = False, only_images: bool = False) -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] Sincronizzazione in corso su {len(roots)} cartella/e registrata/e...")
 
-    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False, analyze_images=analyze_images)
+    new_count, _, _ = _index_roots(db, roots, db_path, verbose=False,
+                                    analyze_images=analyze_images, only_images=only_images)
 
     unclassified = [r for r in db.all_files() if not r.theme]
     classified_count = 0
@@ -328,7 +336,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
                         return 1
                     print(msg + " Nuovo tentativo al prossimo giro.", file=sys.stderr)
                 else:
-                    _sync_once(db, roots, args.db, args.num_themes, analyze_images=args.immagini)
+                    _sync_once(db, roots, args.db, args.num_themes,
+                               analyze_images=(args.immagini or args.solo_immagini),
+                               only_images=args.solo_immagini)
                 if not args.loop:
                     break
                 next_run = datetime.now() + timedelta(hours=args.interval)
@@ -415,15 +425,34 @@ def cmd_agente(args: argparse.Namespace) -> int:
                     print("Scelta non valida.", file=sys.stderr)
                     return 1
 
+            if not (args.immagini or args.solo_immagini):
+                try:
+                    risposta = input(
+                        "\nCome trattare le immagini? [n] normale, solo per nome (default) - "
+                        "[c] normale + immagini (OCR e soggetto, più lento) - "
+                        "[s] solo immagini (analizza solo i file immagine, salta il resto): "
+                    ).strip().lower()
+                except EOFError:
+                    risposta = ""
+                if risposta in ("s", "solo", "solo immagini"):
+                    args.solo_immagini = True
+                elif risposta in ("c", "con", "immagini", "con immagini"):
+                    args.immagini = True
+
+        analyze_images = args.immagini or args.solo_immagini
+        only_images = args.solo_immagini
+
         for s in chosen:
             if s["known"]:
                 roots = [Path(e["path"]) for e in s["known"]]
                 print(f"\n=== Revisione di {s['mountpoint']} (disco già conosciuto) ===")
-                _sync_once(db, roots, args.db, args.num_themes, analyze_images=args.immagini)
+                _sync_once(db, roots, args.db, args.num_themes,
+                           analyze_images=analyze_images, only_images=only_images)
             else:
                 root = Path(s["mountpoint"])
                 print(f"\n=== Acquisizione di {s['mountpoint']} (disco nuovo) ===")
-                count, _, _ = _index_roots(db, [root], args.db, verbose=False, analyze_images=args.immagini)
+                count, _, _ = _index_roots(db, [root], args.db, verbose=False,
+                                            analyze_images=analyze_images, only_images=only_images)
                 print(f"Indicizzati {count} file.")
                 all_records = db.all_files()
                 unclassified = [r for r in all_records if not r.theme]
@@ -641,6 +670,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--immagini", action="store_true",
                           help="analizza anche il contenuto delle immagini (OCR + riconoscimento del soggetto); "
                                "richiede 'pip install -e \".[immagini]\"', rallenta molto l'indicizzazione")
+    p_index.add_argument("--solo-immagini", action="store_true",
+                          help="indicizza (e analizza) solo i file immagine, saltando tutti gli altri tipi")
     p_index.add_argument("-v", "--verbose", action="store_true")
     p_index.set_defaults(func=cmd_index)
 
@@ -670,6 +701,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--immagini", action="store_true",
                          help="analizza anche il contenuto delle immagini nuove (OCR + riconoscimento del soggetto); "
                               "richiede 'pip install -e \".[immagini]\"', rallenta molto la sincronizzazione")
+    p_sync.add_argument("--solo-immagini", action="store_true",
+                         help="indicizza (e analizza) solo i file immagine nuovi, saltando tutti gli altri tipi")
     p_sync.set_defaults(func=cmd_sync)
 
     p_query = sub.add_parser("query", help="cerca nei contenuti indicizzati (full-text)")
@@ -708,6 +741,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_agente.add_argument("--immagini", action="store_true",
                            help="analizza anche il contenuto delle immagini (OCR + riconoscimento del soggetto); "
                                 "richiede 'pip install -e \".[immagini]\"', rallenta molto l'operazione")
+    p_agente.add_argument("--solo-immagini", action="store_true",
+                           help="analizza solo i file immagine, saltando tutti gli altri tipi "
+                                "(se non specificato né questo né --immagini, verrà chiesto interattivamente)")
     p_agente.set_defaults(func=cmd_agente)
 
     return parser

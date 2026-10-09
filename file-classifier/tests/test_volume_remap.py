@@ -193,6 +193,96 @@ def test_agente_interactive_tutti_processes_every_connected_drive(tmp_path, monk
         assert len(db.all_files()) == 2
 
 
+def test_agente_interactive_image_choice_con_immagini_enables_analysis(tmp_path, monkeypatch):
+    drive = tmp_path / "disco_a"
+    drive.mkdir()
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(drive / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive: "VOL-A"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive)])
+
+    answers = iter(["1", "c"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "agente"]) == 0
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert record.content is None
+        assert "immagini" in (record.extraction_error or "")
+
+
+def test_agente_interactive_image_choice_normale_skips_analysis(tmp_path, monkeypatch):
+    drive = tmp_path / "disco_a"
+    drive.mkdir()
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(drive / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive: "VOL-A"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive)])
+
+    answers = iter(["1", ""])  # vuoto = normale (default)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "agente"]) == 0
+
+    with FileDatabase(db_path) as db:
+        record = db.all_files()[0]
+        assert "tipo di file non supportato" in (record.extraction_error or "")
+
+
+def test_agente_interactive_image_choice_solo_immagini_skips_other_files(tmp_path, monkeypatch):
+    drive = tmp_path / "disco_a"
+    drive.mkdir()
+    (drive / "nota.txt").write_text("appunti", encoding="utf-8")
+    from PIL import Image
+    Image.new("RGB", (4, 4)).save(drive / "foto.png")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive: "VOL-A"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive)])
+
+    answers = iter(["1", "s"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "agente"]) == 0
+
+    with FileDatabase(db_path) as db:
+        files = db.all_files()
+        assert len(files) == 1
+        assert files[0].filename == "foto.png"
+
+
+def test_agente_skips_image_prompt_when_flag_already_given(tmp_path, monkeypatch):
+    drive = tmp_path / "disco_a"
+    drive.mkdir()
+    (drive / "nota.txt").write_text("appunti", encoding="utf-8")
+    db_path = tmp_path / "db.sqlite"
+
+    get_root, get_id = _fake_volume_functions({drive: "VOL-A"})
+    monkeypatch.setattr(cli.volume_id, "get_volume_root", get_root)
+    monkeypatch.setattr(cli.volume_id, "get_volume_id", get_id)
+    monkeypatch.setattr(cli, "list_drives", lambda: [str(drive)])
+
+    # Nessuna risposta prevista per il prompt immagini: se venisse chiesto
+    # comunque, l'iteratore si esaurirebbe e il test fallirebbe con StopIteration.
+    answers = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    assert cli.main(["--db", str(db_path), "agente", "--solo-immagini"]) == 0
+    with FileDatabase(db_path) as db:
+        assert db.all_files() == []
+
+
 def test_default_db_lives_inside_project_folder():
     expected_project_root = Path(cli.__file__).resolve().parent.parent
     assert Path(cli.DEFAULT_DB).parent == expected_project_root

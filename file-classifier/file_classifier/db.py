@@ -329,11 +329,17 @@ class FileDatabase:
 
     def keywords_summary(self) -> list[dict]:
         """La tabella delle parole chiave individuate dalla classificazione,
-        con il numero di file a cui ciascuna è associata (usata per la ricerca)."""
+        con il numero di file a cui ciascuna è associata (usata per la
+        ricerca). Include anche il tipo di file (estensione, senza il
+        punto) come parola chiave aggiuntiva, derivata da ogni file."""
         rows = self._conn.execute(
             """
-            SELECT keyword, COUNT(*) AS n_files
-            FROM file_keywords
+            SELECT keyword, COUNT(*) AS n_files FROM (
+                SELECT DISTINCT keyword, file_id FROM file_keywords
+                UNION
+                SELECT DISTINCT LOWER(SUBSTR(extension, 2)) AS keyword, id AS file_id
+                FROM files WHERE extension IS NOT NULL AND extension != ''
+            )
             GROUP BY keyword
             ORDER BY n_files DESC, keyword
             """
@@ -341,25 +347,33 @@ class FileDatabase:
         return [dict(row) for row in rows]
 
     def find_by_keyword(self, keyword: str, limit: int = 50) -> list[dict]:
-        """Cerca i file associati a una parola chiave (anche come sottostringa)."""
+        """Cerca i file associati a una parola chiave (anche come
+        sottostringa), incluso il tipo di file (estensione)."""
         rows = self._conn.execute(
             """
             SELECT DISTINCT f.id, f.filename, f.current_path, f.extension,
                    f.modified_at, f.theme, f.theme_keywords
-            FROM file_keywords k
-            JOIN files f ON f.id = k.file_id
-            WHERE k.keyword LIKE ?
+            FROM files f
+            WHERE f.id IN (
+                SELECT file_id FROM file_keywords WHERE keyword LIKE ?
+                UNION
+                SELECT id FROM files WHERE extension LIKE ?
+            )
             ORDER BY f.filename
             LIMIT ?
             """,
-            (f"%{keyword}%", limit),
+            (f"%{keyword}%", f"%{keyword}%", limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
     def _file_ids_for_keyword(self, keyword: str) -> set[int]:
         rows = self._conn.execute(
-            "SELECT DISTINCT file_id FROM file_keywords WHERE keyword LIKE ?",
-            (f"%{keyword}%",),
+            """
+            SELECT file_id FROM file_keywords WHERE keyword LIKE ?
+            UNION
+            SELECT id FROM files WHERE extension LIKE ?
+            """,
+            (f"%{keyword}%", f"%{keyword}%"),
         ).fetchall()
         return {row[0] for row in rows}
 
